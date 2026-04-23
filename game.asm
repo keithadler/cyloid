@@ -1,101 +1,157 @@
-; game.asm - Cyloid Tank Game - Atari 2600 (4KB)
-; Build: dasm game.asm -f3 -ogame.bin
+; =============================================================================
+; game.asm - Cyloid Tank Game - Atari 2600 (4KB NTSC)
+; =============================================================================
+;
+; A tank shooter where the player navigates obstacle-filled arenas,
+; destroys targets to advance levels, and survives homing boss attacks.
+;
+; HARDWARE USAGE:
+;   P0 (Player 0)  = Tank sprite (8 lines, 4 directions)
+;   P1 (Player 1)  = Targets (flicker-multiplexed) + Boss (yellow)
+;   M0 (Missile 0) = Player bullet (4 clocks wide, 6 lines tall)
+;   PF (Playfield)  = Obstacles, walls, title text, lives pips
+;   Ball            = Unused
+;
+; FRAME TIMING (NTSC 262 lines):
+;   VSYNC:    3 lines
+;   VBLANK:  37 lines (TIM64T=43, sprite positioning here)
+;   Visible: 192 lines (8 border + 176 field + 8 border)
+;   Overscan: 30 lines
+;
+; KERNEL: 2-line design
+;   Line 1: Obstacle PF + Tank P0 (max 70 cycles)
+;   Line 2: Target P1 + Missile M0 (max 58 cycles)
+;
+; GAME LOGIC: Split across two frames to fit in VBLANK
+;   Every frame: Joystick, fire, flash/respawn, tank gfx, sound
+;   Even frames: Missile movement, hit detection (2 targets + boss)
+;   Odd frames:  Wall collision, death timers, movement, flicker, boss, collision
+;
+; BUILD: dasm game.asm -f3 -ogame.bin
+; =============================================================================
 
             processor 6502
             include "vcs.h"
             include "macro.h"
 
 ;===============================================================================
-; Constants
+; Game State Constants
 ;===============================================================================
 
-MODE_TITLE     = 0
-MODE_PLAY      = 1
-MODE_OVER      = 2
-MODE_LVLUP     = 3
-MODE_SCORE     = 4          ; score display after game over
+MODE_TITLE     = 0          ; Title sequence (KEITH/ADLER/PRESENTS/CYLOID/BLACK)
+MODE_PLAY      = 1          ; Active gameplay
+MODE_OVER      = 2          ; "GAME OVER" text display
+MODE_LVLUP     = 3          ; Between-level score display
+MODE_SCORE     = 4          ; Final score display after last death
 
-TITLE_KEITH    = 0
+TITLE_KEITH    = 0          ; Title sub-states (sequential)
 TITLE_ADLER    = 1
 TITLE_PRESENTS = 2
 TITLE_CYLOID   = 3
 TITLE_BLACK    = 4
-NUM_TITLE      = 5
+NUM_TITLE      = 5          ; Total title screens
 
-TANK_H         = 8
-MAX_TGTS       = 5          ; max enemies per level
+TANK_H         = 8          ; Tank sprite height in scanlines
+MAX_TGTS       = 5          ; Maximum enemies per level
 
 ;===============================================================================
-; Variables
+; RAM Variables ($80-$D8, ~88 bytes used)
+; Stack grows down from $FF, ~39 bytes free gap
 ;===============================================================================
 
             SEG.U Variables
             ORG $80
 
-GameMode    ds 1
-SubState    ds 1
-StateTimer  ds 1
-FrameCount  ds 1
-TempVar     ds 1
+; --- Core State ---
+GameMode    ds 1            ; Current game mode (MODE_*)
+SubState    ds 1            ; Title: sub-screen index. Play: 0=waiting, 1=started
+StateTimer  ds 1            ; Countdown timer for timed states (frames)
+FrameCount  ds 1            ; Global frame counter (wraps at 256)
+TempVar     ds 1            ; Scratch variable (cached SWCHA, alive count, etc.)
 
-PFData0     ds 8
-PFData1     ds 8
-PFData2     ds 8
+; --- Playfield Text Buffers (used by title screen renderers) ---
+PFData0     ds 8            ; PF0 data for 8 text rows
+PFData1     ds 8            ; PF1 data for 8 text rows
+PFData2     ds 8            ; PF2 data for 8 text rows
 
-TankX       ds 1
-TankY       ds 1
-TankDir     ds 1
+; --- Player Tank (P0) ---
+TankX       ds 1            ; Horizontal position (8-148)
+TankY       ds 1            ; Vertical position / scanline (12-175)
+TankDir     ds 1            ; Direction: 0=up, 1=right, 2=down, 3=left
 
-MissileX    ds 1
-MissileY    ds 1
-MissileDir  ds 1
-MissileOn   ds 1
+; --- Player Missile (M0) ---
+MissileX    ds 1            ; Horizontal position
+MissileY    ds 1            ; Vertical position / scanline
+MissileDir  ds 1            ; Direction (same encoding as TankDir)
+MissileOn   ds 1            ; 0=inactive, 2=active (2 = ENAM0 enable value)
 
-; Current flicker-selected target for kernel
-TgtX        ds 1
-TgtY        ds 1
-TgtLive     ds 1
+; --- Flicker-Selected Target (passed to kernel each frame) ---
+TgtX        ds 1            ; X position of target to draw this frame
+TgtY        ds 1            ; Y position of target to draw this frame
+TgtLive     ds 1            ; 0=none, 1=alive, 2-15=dying, 50=boss alive
 
-; Target arrays (5 targets max)
-TgtAX       ds MAX_TGTS
-TgtAY       ds MAX_TGTS
-TgtALive    ds MAX_TGTS     ; 0=dead, 1=alive, 2+=dying (death timer)
-TgtADirX    ds MAX_TGTS
-TgtADirY    ds MAX_TGTS
-NumTgts     ds 1            ; how many targets this level (1-5)
-FlickerIdx  ds 1
+; --- Target Arrays (up to 5 enemies) ---
+TgtAX       ds MAX_TGTS     ; X positions
+TgtAY       ds MAX_TGTS     ; Y positions
+TgtALive    ds MAX_TGTS     ; 0=dead, 1=alive, 2-15=dying (death timer countdown)
+TgtADirX    ds MAX_TGTS     ; X direction: 0=none, 1=right, $FF=left
+TgtADirY    ds MAX_TGTS     ; Y direction: 0=none, 1=down, $FF=up
+NumTgts     ds 1            ; Number of targets this level (2-5)
+FlickerIdx  ds 1            ; Which target P1 draws this frame (cycles 0 to NumTgts-1)
 
-Score       ds 1
-ButtonPrev  ds 1
-SndVol      ds 1
-Lives       ds 1
-HitFlash    ds 1
-Level       ds 1
-KillCount   ds 1
-FieldColor  ds 1
-WallColor   ds 1
-TgtColor    ds 1
+; --- Scoring & Lives ---
+Score       ds 1            ; Player score (0-99)
+ButtonPrev  ds 1            ; Previous frame's INPT4 (for edge detection)
+SndVol      ds 1            ; Channel 0 volume (tracked in RAM, TIA is write-only)
+Lives       ds 1            ; Remaining lives (0-3)
+HitFlash    ds 1            ; Death flash timer (45=just died, counts down to 0)
+Level       ds 1            ; Current level (0-7, wraps)
+KillCount   ds 1            ; Kills this level (unused after target array rewrite)
 
-TankGfxBuf  ds 8
-ObsPF1      ds 4
-ObsPF2      ds 4
-Moving      ds 1
-MelodyIdx   ds 1
-MelodyTimer ds 1
-TensOff     ds 1
-OnesOff     ds 1
-SndType     ds 1
+; --- Level Appearance ---
+FieldColor  ds 1            ; Background color (from LvlField table)
+WallColor   ds 1            ; Obstacle/wall color (from LvlWall table)
+TgtColor    ds 1            ; Target color (from LvlTgt table)
 
-; Boss (player 2 flyby)
-BossX       ds 1            ; horizontal position
-BossY       ds 1            ; vertical position (scanline)
-BossActive  ds 1            ; 0=inactive, 1=flying
-BossTimer   ds 1            ; countdown to next appearance
-BossBallY   ds 1            ; boss bullet Y position
-BossBallOn  ds 1            ; boss bullet active
+; --- Pre-computed Kernel Data ---
+TankGfxBuf  ds 8            ; Tank sprite for current direction (copied during VBLANK)
+ObsPF1      ds 4            ; PF1 obstacle pattern for 4 horizontal bands
+ObsPF2      ds 4            ; PF2 obstacle pattern for 4 horizontal bands
+
+; --- Audio & UI ---
+Moving      ds 1            ; Nonzero if joystick pressed this frame
+MelodyIdx   ds 1            ; Current note index for melody playback
+MelodyTimer ds 1            ; Frames until next melody note
+TensOff     ds 1            ; Tens digit offset into DigitSprites ($FF = no tens)
+OnesOff     ds 1            ; Ones digit offset into DigitSprites
+SndType     ds 1            ; Current ch0 sound type (0=none, 1=shoot, 2=hit, 3=death)
+RandSeed    ds 1            ; LFSR pseudo-random seed (must be non-zero)
+
+; --- Boss (Player 2 Homing Attacker) ---
+BossX       ds 1            ; Horizontal position (0-155)
+BossY       ds 1            ; Vertical position (10-175)
+BossActive  ds 1            ; 0=inactive, 1=alive/homing, 2-15=dying (death timer)
+BossTimer   ds 1            ; Countdown to next boss appearance (frames)
+BossBallY   ds 1            ; (Legacy — unused after ball removal)
+BossBallOn  ds 1            ; (Legacy — unused after ball removal)
 
 ;===============================================================================
-; Code
+; ROM Code ($F000-$FFFA)
+; Organized as:
+;   Reset + Main Loop
+;   Title Logic
+;   InitGame + SetupLevel + GenObstacles
+;   GameLogic (frame-split: even=missile/hits, odd=movement/collision)
+;   Random + MoveTargets
+;   LvlUpLogic + ScoreLogic + BuildDigits + OverLogic
+;   WaitDraw + DrawTitle dispatch
+;   DrawGame kernel (2-line, cycle-tight)
+;   DrawDigitScreen (score display with P0/P1 digit sprites)
+;   DrawOver (asymmetric PF "GAME OVER")
+;   DoOverscan
+;   Title Renderers (Keith, Adler, Presents, Cyloid, Black)
+;   Sprite Data + Level Tables + Font Data
+;   Vectors ($FFFA)
 ;===============================================================================
 
             SEG Code
@@ -195,8 +251,11 @@ InitGame SUBROUTINE
             sta NumTgts
             sta BossActive
             sta BossBallOn
-            sta SubState        ; 0 = waiting for player to move
-            lda #120            ; boss appears after ~2 seconds
+            sta SubState
+            lda FrameCount      ; #6: seed LFSR from frame count (varies each game)
+            ora #1              ; ensure non-zero
+            sta RandSeed
+            lda #120
             sta BossTimer
             lda #3
             sta Lives
@@ -615,20 +674,13 @@ GameLogic SUBROUTINE
             bcc .bhxOk
             jmp .frameDone
 .bhxOk
-            ; Boss hit! 5 points — start death animation
-            lda #15             ; death timer
+            ; Boss hit — no points, just destroy it
+            lda #15
             sta BossActive      ; >1 = dying
             lda #0
             sta BossBallOn
             sta MissileOn
             sta ENABL
-            lda Score
-            clc
-            adc #5
-            cmp #41
-            bcc .bscOk
-            lda #40
-.bscOk      sta Score
             lda #12
             sta AUDC0
             lda #15
@@ -684,6 +736,9 @@ GameLogic SUBROUTINE
 .deathDone
             cpy #0
             bne .noLvlAdv
+            ; #9: Flash screen white on level complete
+            lda #$0E
+            sta COLUBK
             lda #MODE_LVLUP
             sta GameMode
             lda #120
@@ -696,11 +751,21 @@ GameLogic SUBROUTINE
             jmp .frameDone
 .noLvlAdv
 
-            ; Move targets — check every 4th odd frame
+            ; Move targets — faster on higher levels
+            lda Level
+            cmp #6
+            bcs .doMv           ; level 6+: every odd frame
+            cmp #3
+            bcs .moveFast       ; level 3-5: every 2nd odd frame
+            ; Level 0-2: every 4th odd frame
             lda FrameCount
-            and #%00000110      ; bits 1-2, gives 0,2,4,6 pattern
-            bne .skipMv         ; move when bits 1-2 are 00
-            jsr MoveTargets
+            and #%00000110
+            bne .skipMv
+            jmp .doMv
+.moveFast   lda FrameCount
+            and #%00000010
+            bne .skipMv
+.doMv       jsr MoveTargets
 .skipMv
 
             ; Flicker select (inline)
@@ -755,8 +820,7 @@ GameLogic SUBROUTINE
             jmp .spawnXset
 .spawnLeft  lda #5              ; spawn from left
 .spawnXset  sta BossX
-            lda FrameCount
-            eor Score
+            jsr Random          ; #6: use LFSR for boss Y
             and #$7F
             clc
             adc #30
@@ -1049,7 +1113,7 @@ GameLogic SUBROUTINE
             lsr
             bcs .noWin
             lda Score
-            cmp #40
+            cmp #99             ; win at 99 points
             bcc .noWin
             lda #0
             sta SndVol
@@ -1068,27 +1132,60 @@ GameLogic SUBROUTINE
             sta MelodyTimer
 .noWin      jmp WaitDraw
 
+; #6: LFSR pseudo-random number generator
+; Call: jsr Random. Returns random byte in A. Updates RandSeed.
+Random SUBROUTINE
+            lda RandSeed
+            lsr
+            bcc .noTap
+            eor #$B4            ; taps for maximal 8-bit LFSR
+.noTap      sta RandSeed
+            rts
+
 MoveTargets SUBROUTINE
+            ; #8: Count alive targets for speed-up
+            ldy #0              ; alive count
+            ldx #0
+.countLp    cpx NumTgts
+            bcs .countDn
+            lda TgtALive,x
+            cmp #1
+            bne .countNx
+            iny
+.countNx    inx
+            bne .countLp
+.countDn    ; Y = alive count. Store for speed check
+            sty TempVar         ; reuse TempVar for alive count
+
             ldx #0
 .loop       cpx NumTgts
             bcs .done
             lda TgtALive,x
             cmp #1
-            bne .next           ; skip dead and dying
+            bne .next
             ; Move X
             lda TgtADirX,x
             beq .my
             cmp #1
             bne .ml
             inc TgtAX,x
-            lda TgtAX,x
+            ; #8: extra move if 1-2 targets left
+            lda TempVar
+            cmp #3
+            bcs .mxrOk
+            inc TgtAX,x
+.mxrOk      lda TgtAX,x
             cmp #135
             bcc .my
             lda #$FF
             sta TgtADirX,x
             jmp .my
 .ml         dec TgtAX,x
-            lda TgtAX,x
+            lda TempVar
+            cmp #3
+            bcs .mxlOk
+            dec TgtAX,x
+.mxlOk      lda TgtAX,x
             cmp #12
             bcs .my
             lda #1
@@ -1099,14 +1196,22 @@ MoveTargets SUBROUTINE
             cmp #1
             bne .mu
             inc TgtAY,x
-            lda TgtAY,x
+            lda TempVar
+            cmp #3
+            bcs .mydOk
+            inc TgtAY,x
+.mydOk      lda TgtAY,x
             cmp #155
             bcc .next
             lda #$FF
             sta TgtADirY,x
             jmp .next
 .mu         dec TgtAY,x
-            lda TgtAY,x
+            lda TempVar
+            cmp #3
+            bcs .myuOk
+            dec TgtAY,x
+.myuOk      lda TgtAY,x
             cmp #15
             bcs .next
             lda #1
@@ -1523,7 +1628,7 @@ DrawGame SUBROUTINE
 
 .obsOff     lda #0              ; 2
             sta PF1             ; 3
-            sta PF2             ; 3 = 12 cycles (fast path)
+            sta PF2             ; 3
 
 .tankChk
             ; Tank sprite — simplified: just index and store
@@ -1577,8 +1682,8 @@ DrawGame SUBROUTINE
             sec                 ; 2
             sbc MissileY        ; 3
             bcc .noMsl          ; 2/3
-            cmp #4              ; 2
-            bcs .noMsl          ; 2/3
+            cmp #6              ; #10: missile trail (6 scanlines tall)
+            bcs .noMsl
             lda #2              ; 2
             sta ENAM0           ; 3
             jmp .mslDone        ; 3
@@ -2055,16 +2160,18 @@ RenderCyloid SUBROUTINE
             lda #180
             sec
             sbc StateTimer      ; 0 to 180
-            ; If past screen edge, hide ship
             cmp #156
             bcc .shipVisible
-            ; Ship off-screen — position at 0 but don't draw
+            ; Ship off-screen
             lda #0
-            sta TgtLive         ; reuse as "ship visible" flag
-            jmp .doPos
+            sta TgtLive
+            ; Still need WSYNC lines for timing
+            sta WSYNC
+            sta WSYNC
+            sta WSYNC
+            jmp .afterPos
 .shipVisible
-            sta TgtLive         ; nonzero = visible
-.doPos
+            sta TgtLive
             ; Position tank during VBLANK
             sec
             sta WSYNC
@@ -2079,6 +2186,7 @@ RenderCyloid SUBROUTINE
             sta RESP0
             sta WSYNC
             sta HMOVE
+.afterPos
 
             ; NOW turn on display
             lda #$9E
@@ -2113,7 +2221,11 @@ RenderCyloid SUBROUTINE
             cpx #8
             bne .loadTank
 
-            ; Top blank: 59 lines (+ 1 VBLANK-off line = 60)
+            ; Clear P0 so tank doesn't show during text
+            lda #0
+            sta GRP0
+
+            ; Top blank: 59 lines
             ldy #59
 .top        sta WSYNC
             dey
