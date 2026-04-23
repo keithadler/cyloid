@@ -86,6 +86,14 @@ TensOff     ds 1
 OnesOff     ds 1
 SndType     ds 1
 
+; Boss (player 2 flyby)
+BossX       ds 1            ; horizontal position
+BossY       ds 1            ; vertical position (scanline)
+BossActive  ds 1            ; 0=inactive, 1=flying
+BossTimer   ds 1            ; countdown to next appearance
+BossBallY   ds 1            ; boss bullet Y position
+BossBallOn  ds 1            ; boss bullet active
+
 ;===============================================================================
 ; Code
 ;===============================================================================
@@ -184,8 +192,12 @@ InitGame SUBROUTINE
             sta TgtY
             sta TgtLive
             sta SndType
-            sta NumTgts         ; Bug 9: clear before SetupLevel
-            lda #2
+            sta NumTgts
+            sta BossActive
+            sta BossBallOn
+            lda #240            ; boss appears after ~4 seconds
+            sta BossTimer
+            lda #3
             sta Lives
             sta CXCLR
             jsr SetupLevel
@@ -450,7 +462,26 @@ GameLogic SUBROUTINE
             lda MissileOn
             bne .mGo
             jmp .frameDone
-.mGo        ldx MissileDir
+
+.mGo        ; Check if missile hit background (from last frame's kernel)
+            lda CXM0FB          ; bit 7 = M0 vs PF
+            bpl .noWallHit
+            ; Missile hit wall — kill it with sad sound
+            lda #0
+            sta MissileOn
+            lda #3              ; low buzz
+            sta AUDC0
+            lda #8
+            sta SndVol
+            sta AUDV0
+            lda #20             ; low pitch = sad
+            sta AUDF0
+            lda #1
+            sta SndType
+            jmp .frameDone
+
+.noWallHit
+            ldx MissileDir
             cpx #0
             bne .md1
             lda MissileY
@@ -490,30 +521,62 @@ GameLogic SUBROUTINE
             sta MissileOn
             jmp .frameDone
 
-.mHit       ldx #0
-.hitLoop    cpx NumTgts
-            bcc .hitCheck
-            jmp .frameDone
-.hitCheck   lda TgtALive,x
+.mHit       ; Check 2 targets per frame for reliable detection
+            lda FrameCount
+            lsr
+            and #$07
+            cmp NumTgts
+            bcc .idx1ok
+            lda #0
+.idx1ok     tax
+            ; Target 1
+            lda TgtALive,x
             cmp #1
-            bne .hitNext
+            bne .try2nd
             lda MissileY
             sec
             sbc TgtAY,x
-            bcs .hy
+            bcs .hy1
             eor #$FF
             adc #1
-.hy         cmp #12
-            bcs .hitNext
+.hy1        cmp #12
+            bcs .try2nd
             lda MissileX
             sec
             sbc TgtAX,x
-            bcs .hx
+            bcs .hx1
             eor #$FF
             adc #1
-.hx         cmp #12
-            bcs .hitNext
-            ; HIT
+.hx1        cmp #12
+            bcs .try2nd
+            jmp .hitTarget
+
+.try2nd     ; Check next target
+            inx
+            cpx NumTgts
+            bcc .idx2ok
+            ldx #0
+.idx2ok     lda TgtALive,x
+            cmp #1
+            bne .hitMiss
+            lda MissileY
+            sec
+            sbc TgtAY,x
+            bcs .hy2
+            eor #$FF
+            adc #1
+.hy2        cmp #12
+            bcs .hitMiss
+            lda MissileX
+            sec
+            sbc TgtAX,x
+            bcs .hx2
+            eor #$FF
+            adc #1
+.hx2        cmp #12
+            bcs .hitMiss
+
+.hitTarget  ; HIT!
             lda #15
             sta TgtALive,x
             lda #0
@@ -529,9 +592,54 @@ GameLogic SUBROUTINE
             lda #2
             sta SndType
             jmp .frameDone
-.hitNext    inx
-            cpx NumTgts
-            bcc .hitLoop
+.hitMiss
+
+            ; Check boss hit (quick — only if boss active)
+            lda BossActive
+            bne .bossHitChk
+            jmp .frameDone
+.bossHitChk
+            lda MissileY
+            sec
+            sbc BossY
+            bcs .bhy
+            eor #$FF
+            adc #1
+.bhy        cmp #12
+            bcc .bhyOk
+            jmp .frameDone
+.bhyOk
+            lda MissileX
+            sec
+            sbc BossX
+            bcs .bhx
+            eor #$FF
+            adc #1
+.bhx        cmp #12
+            bcc .bhxOk
+            jmp .frameDone
+.bhxOk
+            ; Boss hit! 5 points
+            lda #0
+            sta BossActive
+            sta BossBallOn
+            sta MissileOn
+            lda Score
+            clc
+            adc #5
+            cmp #41
+            bcc .bscOk
+            lda #40
+.bscOk      sta Score
+            lda #12
+            sta AUDC0
+            lda #15
+            sta SndVol
+            sta AUDV0
+            lda #2
+            sta AUDF0
+            lda #2
+            sta SndType
             jmp .frameDone
 
             ; === ODD FRAME: death timers + move + flicker + collision ===
@@ -605,11 +713,124 @@ GameLogic SUBROUTINE
             sta TgtY
 .fDone
 
+            ; === BOSS LOGIC (only every 4th frame to save cycles) ===
+            lda FrameCount
+            and #3
+            beq .doBossLogic
+            jmp .bossSkipLogic
+.doBossLogic
+
+            lda BossActive
+            bne .bossMove
+            dec BossTimer
+            beq .spawnBoss
+            jmp .bossEnd
+.spawnBoss
+            lda #1
+            sta BossActive
+            lda #0
+            sta BossX
+            lda FrameCount
+            eor Score
+            and #$7F
+            clc
+            adc #30
+            cmp #150
+            bcc .byOk
+            lda #80
+.byOk       sta BossY
+            lda #0
+            sta BossBallOn
+            jmp .bossEnd
+
+.bossMove
+            ; Move boss right (4px since we run every 4th frame)
+            lda BossX
+            clc
+            adc #4
+            sta BossX
+            cmp #160
+            bcc .bossOnScreen
+            lda #0
+            sta BossActive
+            sta BossBallOn
+            lda FrameCount
+            ora #$78
+            sta BossTimer
+            jmp .bossEnd
+
+.bossOnScreen
+            lda BossBallOn
+            bne .moveBossBall
+            lda BossX
+            sec
+            sbc TankX
+            bcs .bxp
+            eor #$FF
+            adc #1
+.bxp        cmp #20
+            bcs .bossEnd
+            lda #1
+            sta BossBallOn
+            lda BossY
+            clc
+            adc #8
+            sta BossBallY
+            lda #14
+            sta AUDC1
+            lda #8
+            sta AUDV1
+            lda #12
+            sta AUDF1
+
+.moveBossBall
+            ; Move ball toward player Y
+            lda BossBallY
+            cmp TankY
+            bcs .ballUp
+            ; Ball below player — move down
+            clc
+            adc #4
+            sta BossBallY
+            cmp #185
+            bcc .bossEnd
+            lda #0
+            sta BossBallOn
+            jmp .bossEnd
+.ballUp     ; Ball above player — move up
+            sec
+            sbc #4
+            sta BossBallY
+            cmp #8
+            bcs .bossEnd
+            lda #0
+            sta BossBallOn
+
+.bossEnd
+.bossSkipLogic
+            ; Show boss on P1 every 3rd frame (use simple counter)
+            lda BossActive
+            beq .noBossFrame
+            lda FrameCount
+            and #$03            ; every 4th frame = boss on P1
+            bne .noBossFrame
+            lda BossX
+            sta TgtX
+            lda BossY
+            sta TgtY
+            lda #1
+            sta TgtLive
+.noBossFrame
+
             ; Collision
             lda HitFlash
             bne .skipC
             lda CXP0FB
-            bmi .doDeath
+            bmi .doDeath        ; P0 vs PF (bit 7)
+            ; Check P0 vs Ball (boss bullet) — bit 6 of CXP0FB
+            lda CXP0FB
+            and #%01000000
+            bne .doDeath
             lda CXPPMM
             bpl .skipC
 .doDeath
@@ -815,6 +1036,15 @@ LvlUpLogic SUBROUTINE
             and #7
             sta Level
             jsr SetupLevel
+            ; Reset tank to safe spawn + clear collisions
+            lda #78
+            sta TankX
+            lda #170
+            sta TankY
+            lda #0
+            sta MissileOn
+            sta HitFlash
+            sta CXCLR
             lda #MODE_PLAY
             sta GameMode
             jmp WaitDraw
@@ -966,14 +1196,10 @@ WaitDraw SUBROUTINE
             beq .lv
             cmp #MODE_SCORE
             beq .sc
-            ; Non-game screens: turn off VBLANK now
-            sta WSYNC
-            lda #0
-            sta VBLANK
+            ; Non-game screens: check if CYLOID (needs positioning)
             jmp DrawTitle
 .g          jmp DrawGame
-.o          ; Turn off VBLANK for non-positioning screens
-            sta WSYNC
+.o          sta WSYNC
             lda #0
             sta VBLANK
             jmp DrawOver
@@ -1043,13 +1269,37 @@ DrawGame SUBROUTINE
             asl
             sta HMM0
             sta RESM0
+            ; Position boss ball (Ball object)
+            lda BossBallOn
+            beq .skipBallPos
+            lda BossX           ; ball X = boss X
+            sec
+            sta WSYNC
+.dbl        sbc #15
+            bcs .dbl
+            eor #7
+            asl
+            asl
+            asl
+            asl
+            sta HMBL
+            sta RESBL
+.skipBallPos
             sta WSYNC
             sta HMOVE
 
-            ; NOW turn off VBLANK - visible area starts
-            sta WSYNC
+            ; Turn on display — set black first, then WSYNC+VBLANK
             lda #0
-            sta VBLANK
+            sta COLUBK
+            sta COLUPF
+            sta PF0
+            sta PF1
+            sta PF2
+            sta GRP0
+            sta GRP1
+            sta ENAM0
+            sta WSYNC           ; this line is the first visible line (black)
+            sta VBLANK          ; display fully on for next line
 
             ; Colors
             lda HitFlash
@@ -1063,12 +1313,12 @@ DrawGame SUBROUTINE
             lda FrameCount
             eor HitFlash
             and #$0E
-            ora FieldColor
+            ora #$00            ; black background during death flash
             sta COLUBK
             jmp .colorDone
 .nc         lda #$9E
             sta COLUP0
-            lda FieldColor
+            lda #$00            ; black field background
             sta COLUBK
 .colorDone
             ; Target color: dying targets flash white
@@ -1115,11 +1365,11 @@ DrawGame SUBROUTINE
             sta PF2
 .topBorder  sta WSYNC
             inx
-            cpx #8
+            cpx #8              ; 8 black border lines
             bne .topBorder
 
             ; Field area: 176 lines
-            lda FieldColor
+            lda #$00            ; black background
             sta COLUBK
             lda WallColor
             ora #$08
@@ -1181,7 +1431,6 @@ DrawGame SUBROUTINE
 
             ; LINE 2: target + missile
 .line2
-            ; Target — simplified
             lda TgtLive         ; 3
             beq .noTgt          ; 2/3
             txa                 ; 2
@@ -1190,8 +1439,14 @@ DrawGame SUBROUTINE
             cmp #6              ; 2
             bcs .noTgt          ; 2/3
             tay                 ; 2
-            lda TargetGfx,y     ; 4
-            sta GRP1            ; 3 = 25
+            lda TgtLive         ; 3
+            cmp #2              ; 2
+            bcs .tgtExp         ; 2/3
+            lda TargetGfx,y     ; 4  normal sprite
+            jmp .storeTgt       ; 3
+.tgtExp     tya                 ; 2  explosion: random from Y + frame
+            eor FrameCount      ; 3
+.storeTgt   sta GRP1            ; 3
             jmp .tgtDone        ; 3
 
 .noTgt      lda #0              ; 2
@@ -1215,6 +1470,20 @@ DrawGame SUBROUTINE
             sta ENAM0           ; 3
 
 .mslDone
+            ; Boss ball (Ball object) — 2 lines tall
+            lda BossBallOn      ; 3
+            beq .noBall         ; 2/3
+            txa                 ; 2
+            sec                 ; 2
+            sbc BossBallY       ; 3
+            cmp #2              ; 2
+            bcs .noBall         ; 2/3
+            lda #2              ; 2
+            sta ENABL           ; 3
+            jmp .ballDone       ; 3
+.noBall     lda #0              ; 2
+            sta ENABL           ; 3
+.ballDone
             inx                 ; 2
             cpx #184            ; 2
             beq .fEnd           ; 2/3
@@ -1481,7 +1750,7 @@ DoOverscan
 ; TITLE RENDERERS
 ;===============================================================================
 DrawText1 SUBROUTINE
-            ldy #68
+            ldy #67             ; 67 + 1 VBLANK-off line = 68 total top
 .t          sta WSYNC
             dey
             bne .t
@@ -1513,6 +1782,9 @@ DrawText1 SUBROUTINE
             rts
 
 RenderKeith SUBROUTINE
+            sta WSYNC
+            lda #0
+            sta VBLANK
             lda #$00
             sta COLUBK
             lda FrameCount
@@ -1536,6 +1808,9 @@ RenderKeith SUBROUTINE
             jmp DoOverscan
 
 RenderAdler SUBROUTINE
+            sta WSYNC
+            lda #0
+            sta VBLANK
             lda #$00
             sta COLUBK
             lda FrameCount
@@ -1559,6 +1834,9 @@ RenderAdler SUBROUTINE
             jmp DoOverscan
 
 RenderPresents SUBROUTINE
+            sta WSYNC
+            lda #0
+            sta VBLANK
             lda #$00
             sta COLUBK
             lda #%00000001      ; REFLECT mode for asymmetric
@@ -1568,7 +1846,7 @@ RenderPresents SUBROUTINE
             sta PF1
             sta PF2
 
-            ldy #68
+            ldy #63             ; 63 + 1 VBLANK-off = 64 top
 .top        sta WSYNC
             dey
             bne .top
@@ -1611,95 +1889,123 @@ RenderPresents SUBROUTINE
             cpy #8
             bne .row
 
-            ldy #68
+            ldy #64             ; 64 bottom
 .bot        sta WSYNC
             dey
             bne .bot
             jmp DoOverscan
 
 RenderCyloid SUBROUTINE
-            lda #$00
-            sta COLUBK
-            lda #%00000001      ; REFLECT mode (needed for asymmetric trick)
-            sta CTRLPF
+            ; Calculate ship position
+            lda #180
+            sec
+            sbc StateTimer      ; 0 to 180
+            ; If past screen edge, hide ship
+            cmp #156
+            bcc .shipVisible
+            ; Ship off-screen — position at 0 but don't draw
             lda #0
+            sta TgtLive         ; reuse as "ship visible" flag
+            jmp .doPos
+.shipVisible
+            sta TgtLive         ; nonzero = visible
+.doPos
+            ; Position tank during VBLANK
+            sec
+            sta WSYNC
+.posT       sbc #15
+            bcs .posT
+            eor #7
+            asl
+            asl
+            asl
+            asl
+            sta HMP0
+            sta RESP0
+            sta WSYNC
+            sta HMOVE
+
+            ; NOW turn on display
+            lda #$9E
+            sta COLUP0
+            lda #0
+            sta COLUBK
             sta PF0
             sta PF1
             sta PF2
+            sta WSYNC
+            sta VBLANK          ; display on
 
-            ; Top blank: 68 lines
-            ldy #68
+            ; Engine rumble
+            lda #6
+            sta AUDC1
+            lda #3
+            sta AUDV1
+            lda FrameCount
+            and #1
+            clc
+            adc #30
+            sta AUDF1
+
+            lda #%00000001
+            sta CTRLPF
+
+            ; Load tank-right sprite
+            ldx #0
+.loadTank   lda TankRightGfx,x
+            sta TankGfxBuf,x
+            inx
+            cpx #8
+            bne .loadTank
+
+            ; Top blank: 59 lines (+ 1 VBLANK-off line = 60)
+            ldy #59
 .top        sta WSYNC
             dey
             bne .top
 
             ; Asymmetric PF kernel: 8 rows x 7 scanlines = 56 lines
-            ldy #0              ; row index
+            ; Tank flies at scanline ~48 (row 6-7 area, Y=48 relative to text start)
+            ldy #0
 .row
-            ; Set color per row (cycling)
             lda FrameCount
             lsr
             and #$0E
             ora #$C2
             sta COLUPF
 
-            ldx #7              ; 7 scanlines per row
+            ldx #7
 .scanLine
             sta WSYNC
-            ; --- LEFT HALF: write PF0/PF1/PF2 early ---
-            lda CycLPF0,y       ; 4
-            sta PF0              ; 3  = 7 (PF0 drawn at cycle ~23, plenty of time)
-            lda CycLPF1,y       ; 4
-            sta PF1              ; 3  = 14
-            lda CycLPF2,y       ; 4
-            sta PF2              ; 3  = 21
-            ; --- WAIT for beam to pass PF0 right half (cycle ~53) ---
-            ; We're at ~21 cycles. Need to reach ~40 before writing right PF2.
-            ; PF2 right starts at cycle ~40 (pixel 148), so write before that.
-            ; Actually in repeat mode, right PF0 starts at cycle 37.
-            ; We need to update PF0 for right half AFTER left PF2 is latched
-            ; but BEFORE right PF0 is drawn.
-            ;
-            ; Timing: left PF2 finishes at cycle ~36. Right PF0 starts at ~37.
-            ; So we need to write right-half PF0 between cycle 36-37... impossible
-            ; in repeat mode. 
-            ;
-            ; In REFLECT mode, right half draws PF2,PF1,PF0 (reversed order).
-            ; So right PF2 starts at ~37, PF1 at ~49, PF0 at ~65.
-            ; We can update PF2 after left PF2 latches (~36), then PF1, then PF0.
-            ;
-            ; USE REFLECT MODE for the asymmetric trick!
-            ; Left: PF0(23) PF1(29) PF2(36)
-            ; Right: PF2(37) PF1(49) PF0(65)
-            ; After writing left PF2 at cycle 21, wait until cycle ~37,
-            ; then write right PF2, then PF1, then PF0.
-            
-            ; Timing: left PF2 latched at cycle ~36, right PF2 at ~44
-            ; We're at cycle ~21 after writing left PF2.
-            ; Need to wait until cycle ~42 before writing right PF2.
-            ; Burn 21 cycles (10.5 NOPs, use 10 NOPs + 1 extra cycle)
-            nop                  ; 2 = 23
-            nop                  ; 2 = 25
-            nop                  ; 2 = 27
-            nop                  ; 2 = 29
-            nop                  ; 2 = 31
-            nop                  ; 2 = 33
-            nop                  ; 2 = 35
-            nop                  ; 2 = 37
-            nop                  ; 2 = 39
-            nop                  ; 2 = 41
-            ; --- RIGHT HALF: update PF2 first (draws first in reflect) ---
-            lda CycRPF2,y       ; 4 = 45  (right PF2 latches at ~44, just in time)
-            sta PF2              ; 3 = 48
-            lda CycRPF1,y       ; 4 = 52  (right PF1 at ~52)
-            sta PF1              ; 3 = 55
-            lda CycRPF0,y       ; 4 = 59  (right PF0 at ~60)
-            sta PF0              ; 3 = 62
+            ; Left PF
+            lda CycLPF0,y
+            sta PF0
+            lda CycLPF1,y
+            sta PF1
+            lda CycLPF2,y
+            sta PF2
+            ; NOP sled for right half
+            nop
+            nop
+            nop
+            nop
+            nop
+            nop
+            nop
+            nop
+            nop
+            nop
+            ; Right PF
+            lda CycRPF2,y
+            sta PF2
+            lda CycRPF1,y
+            sta PF1
+            lda CycRPF0,y
+            sta PF0
 
             dex
             bne .scanLine
 
-            ; Gap line: clear PF
             sta WSYNC
             lda #0
             sta PF0
@@ -1710,22 +2016,65 @@ RenderCyloid SUBROUTINE
             cpy #8
             bne .row
 
-            ; Bottom blank: 68 lines
-            ldy #68
+            ; Gap after text: 8 lines
+            ldy #8
+.gap        sta WSYNC
+            dey
+            bne .gap
+
+            ; Tank fly area: 16 lines
+            ldx #0
+.tankArea   sta WSYNC
+            lda TgtLive         ; ship visible?
+            beq .noShip
+            cpx #4
+            bcc .noShip
+            cpx #12
+            bcs .noShip
+            txa
+            sec
+            sbc #4
+            tay
+            lda TankGfxBuf,y
+            sta GRP0
+            jmp .shipDone
+.noShip     lda #0
+            sta GRP0
+.shipDone   inx
+            cpx #16
+            bne .tankArea
+
+            ; Clear sprite
+            lda #0
+            sta GRP0
+
+            ; Bottom blank: remaining lines (60+56+8+8+16 = 148, need 192-148 = 44)
+            ldy #44
 .bot        sta WSYNC
             dey
             bne .bot
 
+            ; Silence engine when ship off-screen
+            lda TgtLive
+            bne .noSilence
+            lda #0
+            sta AUDV1
+.noSilence
+
+            jmp DoOverscan
+
             jmp DoOverscan
 
 RenderBlack SUBROUTINE
+            sta WSYNC
             lda #0
+            sta VBLANK
             sta COLUBK
             sta COLUPF
             sta PF0
             sta PF1
             sta PF2
-            ldx #192
+            ldx #191            ; 191 + 1 VBLANK-off = 192
 .bk         sta WSYNC
             dex
             bne .bk

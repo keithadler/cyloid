@@ -1,5 +1,31 @@
 # Changelog - Cyloid
 
+## v0.9 - April 23, 2026
+
+### New Feature: Boss Flyby
+- Player 2 boss randomly flies across the field every ~4-15 seconds
+- Boss fires a Ball object toward the player's Y position
+- Boss bullet kills the player on contact (Ball vs P0 collision)
+- Shooting the boss awards 5 points
+- Boss uses P1 on every 4th frame (targets get the other 3)
+- Boss fire sound: menacing low buzz (AUDC=14)
+
+### Gameplay
+- 3 lives per game (was 2)
+- Missiles stop when hitting playfield obstacles with a sad sound (CXM0FB collision)
+- Black field background for cleaner look
+
+### Fixes
+- Boss ball tracks toward player Y (was always firing downward)
+- Hit detection checks 2 targets per frame instead of 1 — much more reliable
+- Replaced mod-3 division loop (up to 85 iterations!) with simple bitmask
+- Boss logic gated to every 4th frame to prevent VBLANK overrun
+- Fixed PRESENTS scanline count (was 200, now 192)
+- Fixed game kernel top border (was 7 lines, now 8 — caused 191 visible lines)
+- Ship on CYLOID screen disappears off right edge instead of wrapping
+- All title screens handle their own VBLANK-off for correct frame timing
+- 517 bytes ROM free
+
 ## v0.8 - April 23, 2026
 
 ### Critical Fix: Frame Stability
