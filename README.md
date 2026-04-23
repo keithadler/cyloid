@@ -2,6 +2,12 @@
 
 A tank shooter for the Atari 2600, written in 6502 assembly.
 
+## 🎮 Play in Browser
+
+[**Play Cyloid Now**](https://javatari.org?ROM=https://raw.githubusercontent.com/keithadler/cyloid/main/cyloid.rom)
+
+Arrow keys to move, Space to fire.
+
 ## Build
 
 ```bash
@@ -9,13 +15,13 @@ brew install dasm        # macOS
 make
 ```
 
-Produces `game.bin` — a 4KB NTSC Atari 2600 ROM.
+Produces `game.bin` and `cyloid.rom` — a 4KB NTSC Atari 2600 ROM.
 
-## Play
+## Play Locally
 
 ```bash
 brew install --cask stella
-open -a Stella game.bin
+open -a Stella cyloid.rom
 ```
 
 ### Controls (Stella)

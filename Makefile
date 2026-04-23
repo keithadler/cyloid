@@ -8,9 +8,10 @@ all: $(OUTPUT)
 
 $(OUTPUT): $(SOURCE) vcs.h macro.h
 	$(DASM) $(SOURCE) -f3 -o$(OUTPUT) -s$(SYMBOL) -l$(LIST)
+	cp $(OUTPUT) cyloid.rom
 
 clean:
-	rm -f $(OUTPUT) $(SYMBOL) $(LIST)
+	rm -f $(OUTPUT) $(SYMBOL) $(LIST) cyloid.rom
 
 run: $(OUTPUT)
 	@echo "Open $(OUTPUT) in Stella emulator to play!"

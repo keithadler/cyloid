@@ -132,8 +132,8 @@ BossX       ds 1            ; Horizontal position (0-155)
 BossY       ds 1            ; Vertical position (10-175)
 BossActive  ds 1            ; 0=inactive, 1=alive/homing, 2-15=dying (death timer)
 BossTimer   ds 1            ; Countdown to next boss appearance (frames)
-BossBallY   ds 1            ; (Legacy — unused after ball removal)
-BossBallOn  ds 1            ; (Legacy — unused after ball removal)
+Streak      ds 1            ; #8: Consecutive hit counter (0-5)
+MoveTimer   ds 1            ; #6: Frames joystick held (for acceleration)
 
 ;===============================================================================
 ; ROM Code ($F000-$FFFA)
@@ -250,7 +250,8 @@ InitGame SUBROUTINE
             sta SndType
             sta NumTgts
             sta BossActive
-            sta BossBallOn
+            sta Streak
+            sta MoveTimer
             sta SubState
             lda FrameCount      ; #6: seed LFSR from frame count (varies each game)
             ora #1              ; ensure non-zero
@@ -577,6 +578,7 @@ GameLogic SUBROUTINE
             bcc .mHit
 .mKill      lda #0
             sta MissileOn
+            sta Streak          ; #8: reset streak on miss
             jmp .frameDone
 
 .mHit       ; Check 2 targets per frame (rotate)
@@ -632,12 +634,20 @@ GameLogic SUBROUTINE
             adc #1
 .hx2        cmp #12
             bcs .hitMiss
-.hitTarget  ; HIT
+.hitTarget  ; HIT — #8: streak scoring
             lda #15
             sta TgtALive,x
             lda #0
             sta MissileOn
-            inc Score
+            ; Add streak bonus (1 + min(streak, 4))
+            inc Streak
+            lda Streak
+            cmp #5
+            bcc .strkOk
+            lda #5
+.strkOk     clc
+            adc Score
+            sta Score
             lda #12
             sta AUDC0
             lda #15
@@ -678,7 +688,6 @@ GameLogic SUBROUTINE
             lda #15
             sta BossActive      ; >1 = dying
             lda #0
-            sta BossBallOn
             sta MissileOn
             sta ENABL
             lda #12
@@ -701,6 +710,7 @@ GameLogic SUBROUTINE
             bpl .noWall
             lda #0
             sta MissileOn
+            sta Streak          ; #8: reset streak on wall hit
             lda #3
             sta AUDC0
             lda #6
@@ -1016,7 +1026,6 @@ GameLogic SUBROUTINE
             sta SndVol
             sta AUDV0
             sta BossActive      ; Bug 10: clear boss on game end
-            sta BossBallOn
             sta ENABL
             lda #MODE_SCORE
             sta GameMode
@@ -1051,7 +1060,7 @@ GameLogic SUBROUTINE
             cpx #8
             bne .bufLp
             jmp .gfxDone
-.doExp      ; OPT 3: Simplified explosion — just 4 bytes
+.doExp      ; #10: Death debris — explosion on both P0 and P1
             lda FrameCount
             eor HitFlash
             sta TankGfxBuf
@@ -1120,7 +1129,6 @@ GameLogic SUBROUTINE
             sta AUDV0
             sta AUDV1
             sta BossActive
-            sta BossBallOn
             sta ENABL
             lda #MODE_SCORE
             sta GameMode
@@ -1243,7 +1251,6 @@ LvlUpLogic SUBROUTINE
             sta MissileOn
             sta HitFlash
             sta BossActive      ; Bug 6: clear boss on level change
-            sta BossBallOn
             sta ENABL
             sta CXCLR
             lda #MODE_PLAY
@@ -1541,9 +1548,20 @@ DrawGame SUBROUTINE
 
             ldx #0
 
-            ; Top border: 8 black lines with life indicators
-            ; Use PF1 for small centered pips (no P1 interference)
+            ; Top border: 8 lines with life indicators
+            ; #7: Flash red when boss just spawned (BossActive=1, BossX < 10)
+            lda BossActive
+            cmp #1
+            bne .normalBorder
+            lda BossX
+            cmp #15
+            bcs .normalBorder
+            lda #$42            ; red flash!
+            sta COLUBK
+            jmp .borderColor
+.normalBorder
             lda #$00
+.borderColor
             sta COLUBK
             sta PF0
             sta PF2
@@ -1641,7 +1659,7 @@ DrawGame SUBROUTINE
             sbc TankY           ; 3
             tay                 ; 2
             lda TankGfxBuf,y    ; 4
-            sta GRP0            ; 3 = 24 cycles
+            sta GRP0            ; 3
             inx                 ; 2
             sta WSYNC           ; 3
             jmp .line2          ; 3
@@ -2388,6 +2406,10 @@ LvlObsMask  .byte %00010000    ; 0: minimal
 
 ; Bug 3: safe Y positions for targets (avoid all obstacle bands)
 SafeYTbl    .byte 40,70,105,135,165
+
+; #1: Tank multicolor table (indexed by sprite row 0-7)
+; Rows 0-1: treads (brown), 2-5: body (cyan), 6-7: turret (white)
+TankColors  .byte $F2,$F2,$9E,$9E,$9E,$9E,$0E,$0E
 
 MelodyNotes .byte 8,9,11,12,15,17,20,24
 MelodyVols  .byte 12,11,10,9,8,7,5,3
