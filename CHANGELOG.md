@@ -1,5 +1,49 @@
 # Changelog - Cyloid
 
+## v0.12 - April 23, 2026
+
+### Fix
+- Boss resets when it kills the player — no more spawn camping. Boss deactivates on player death and respawns after a delay, giving the player a clean start.
+
+## v0.11 - April 23, 2026
+
+### Gameplay
+- Boss (Player 2) now homes toward Player 1 — kamikaze attacker, no missile
+- Boss speed scales with level: 2px (levels 0-2), 3px (3-5), 4px (6-7)
+- Boss is bright yellow — clearly distinct from green targets
+- Boss explodes when shot (15-frame death animation, 5 points)
+- Occasional quiet ping sound when boss is on screen
+- Game waits for player to move before level 1 starts
+- Enemies move on all levels (level 0 was stationary)
+- Enemy movement frequency increased (every 4th odd frame)
+
+### Bug Fixes
+- Fixed frame split movement bug — `and #3` never equals 0 on odd frames. Changed to `and #%00000110` for correct gating
+- Boss P1 override moved to `.frameDone` (runs every frame, not just odd)
+- Boss ball/missile system completely removed — replaced with homing collision
+- Removed all ENABL/RESBL/HMBL ball object code
+- Software ball collision removed (was causing phantom deaths)
+- Boss state cleared on level transitions and game end
+- Missile cleared on player respawn
+
+### Performance
+- BufTankGfx inlined (saves 12 cycles JSR/RTS per frame)
+- Explosion simplified to 8 direct stores (was 8-iteration loop)
+- Sound decay uses `dec` instead of `lda/sec/sbc/sta`
+- Win check gated to even frames only
+- Death timer loop guard for NumTgts=0
+- Ball drawing removed from kernel (was 20 cycles over budget on line 2)
+
+### Audio
+- Victory jingle: 6 gentle notes, warm lead tone, slower tempo
+- Game over melody: subtle warm tone, low volume
+- Boss presence: quiet ping every ~1 second
+- Boss alarm replaces movement sound when active
+
+### Technical
+- 420 bytes ROM free
+- Removed BossBallY/BossBallOn from active use (variables still allocated)
+
 ## v0.10 - April 23, 2026
 
 ### Gameplay Flow

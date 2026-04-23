@@ -195,6 +195,7 @@ InitGame SUBROUTINE
             sta NumTgts
             sta BossActive
             sta BossBallOn
+            sta SubState        ; 0 = waiting for player to move
             lda #120            ; boss appears after ~2 seconds
             sta BossTimer
             lda #3
@@ -356,7 +357,23 @@ GenObstacles SUBROUTINE
 ; GAME LOGIC
 ;===============================================================================
 GameLogic SUBROUTINE
-            ; === EVERY FRAME: joystick + fire (must be responsive) ===
+            ; Wait for player to move before starting level 1
+            lda SubState
+            bne .gameStarted
+            ; Check if any direction pressed
+            lda SWCHA
+            and #%11110000
+            cmp #%11110000
+            beq .waitForMove    ; no input — skip all logic, just draw
+            ; Player moved! Start the game
+            lda #1
+            sta SubState
+            jmp .gameStarted
+.waitForMove
+            jmp WaitDraw        ; draw the field but don't run logic
+
+.gameStarted
+            ; === EVERY FRAME: joystick + fire ===
             lda #0
             sta Moving
             lda SWCHA
@@ -457,31 +474,13 @@ GameLogic SUBROUTINE
             beq .evenFrame
             jmp .oddFrame
 
-            ; === EVEN FRAME: missile + hit detection ===
+            ; === EVEN FRAME: missile movement only ===
 .evenFrame
             lda MissileOn
             bne .mGo
             jmp .frameDone
 
-.mGo        ; Check if missile hit background (from last frame's kernel)
-            lda CXM0FB          ; bit 7 = M0 vs PF
-            bpl .noWallHit
-            ; Missile hit wall — kill it with sad sound
-            lda #0
-            sta MissileOn
-            lda #3              ; low buzz
-            sta AUDC0
-            lda #8
-            sta SndVol
-            sta AUDV0
-            lda #20             ; low pitch = sad
-            sta AUDF0
-            lda #1
-            sta SndType
-            jmp .frameDone
-
-.noWallHit
-            ldx MissileDir
+.mGo        ldx MissileDir
             cpx #0
             bne .md1
             lda MissileY
@@ -521,7 +520,7 @@ GameLogic SUBROUTINE
             sta MissileOn
             jmp .frameDone
 
-.mHit       ; Check 2 targets per frame for reliable detection
+.mHit       ; Check 1 target per frame (rotate)
             lda FrameCount
             lsr
             and #$07
@@ -529,10 +528,9 @@ GameLogic SUBROUTINE
             bcc .idx1ok
             lda #0
 .idx1ok     tax
-            ; Target 1
             lda TgtALive,x
             cmp #1
-            bne .try2nd
+            bne .hitMiss
             lda MissileY
             sec
             sbc TgtAY,x
@@ -540,7 +538,7 @@ GameLogic SUBROUTINE
             eor #$FF
             adc #1
 .hy1        cmp #12
-            bcs .try2nd
+            bcs .hitMiss
             lda MissileX
             sec
             sbc TgtAX,x
@@ -548,35 +546,8 @@ GameLogic SUBROUTINE
             eor #$FF
             adc #1
 .hx1        cmp #12
-            bcs .try2nd
-            jmp .hitTarget
-
-.try2nd     ; Check next target
-            inx
-            cpx NumTgts
-            bcc .idx2ok
-            ldx #0
-.idx2ok     lda TgtALive,x
-            cmp #1
-            bne .hitMiss
-            lda MissileY
-            sec
-            sbc TgtAY,x
-            bcs .hy2
-            eor #$FF
-            adc #1
-.hy2        cmp #12
             bcs .hitMiss
-            lda MissileX
-            sec
-            sbc TgtAX,x
-            bcs .hx2
-            eor #$FF
-            adc #1
-.hx2        cmp #12
-            bcs .hitMiss
-
-.hitTarget  ; HIT!
+            ; HIT
             lda #15
             sta TgtALive,x
             lda #0
@@ -593,8 +564,7 @@ GameLogic SUBROUTINE
             sta SndType
             jmp .frameDone
 .hitMiss
-
-            ; Check boss hit (quick — only if boss active)
+            ; Boss hit check
             lda BossActive
             bne .bossHitChk
             jmp .frameDone
@@ -619,12 +589,13 @@ GameLogic SUBROUTINE
             bcc .bhxOk
             jmp .frameDone
 .bhxOk
-            ; Boss hit! 5 points
+            ; Boss hit! 5 points — start death animation
+            lda #15             ; death timer
+            sta BossActive      ; >1 = dying
             lda #0
-            sta BossActive
             sta BossBallOn
             sta MissileOn
-            sta ENABL           ; clear ball sprite immediately
+            sta ENABL
             lda Score
             clc
             adc #5
@@ -643,14 +614,32 @@ GameLogic SUBROUTINE
             sta SndType
             jmp .frameDone
 
-            ; === ODD FRAME: death timers + move + flicker + collision ===
+            ; === ODD FRAME: wall collision + death timers + move + flicker + collision ===
 .oddFrame
-            ; Death timers + alive check
+            ; Check missile vs wall (moved from even frame to save cycles)
+            lda MissileOn
+            beq .noWall
+            lda CXM0FB
+            bpl .noWall
+            lda #0
+            sta MissileOn
+            lda #3
+            sta AUDC0
+            lda #6
+            sta SndVol
+            sta AUDV0
+            lda #20
+            sta AUDF0
+            lda #1
+            sta SndType
+.noWall
+
+            ; Death timers
             ldx #0
             ldy #0
-.deathLoop  cpx NumTgts
+            cpx NumTgts         ; Bug 8: check before first iteration
             bcs .deathDone
-            lda TgtALive,x
+.deathLoop  lda TgtALive,x
             beq .deathNext
             cmp #2
             bcc .countAlive
@@ -681,10 +670,10 @@ GameLogic SUBROUTINE
             jmp .frameDone
 .noLvlAdv
 
-            ; Move targets every 4th frame
+            ; Move targets — check every 4th odd frame
             lda FrameCount
-            and #7              ; every 8th frame now (was 4th)
-            bne .skipMv
+            and #%00000110      ; bits 1-2, gives 0,2,4,6 pattern
+            bne .skipMv         ; move when bits 1-2 are 00
             jsr MoveTargets
 .skipMv
 
@@ -714,19 +703,12 @@ GameLogic SUBROUTINE
             sta TgtY
 .fDone
 
-            ; === BOSS LOGIC (only every 4th frame to save cycles) ===
-            lda FrameCount
-            and #3
-            beq .doBossLogic
-            jmp .bossSkipLogic
-.doBossLogic
-
+            ; Boss timer decrements every odd frame (not gated)
             lda BossActive
-            bne .bossMove
+            bne .bossLogicGate
             dec BossTimer
-            beq .spawnBoss
-            jmp .bossEnd
-.spawnBoss
+            bne .bossLogicGate
+            ; Spawn boss
             lda #1
             sta BossActive
             lda #0
@@ -740,99 +722,79 @@ GameLogic SUBROUTINE
             bcc .byOk
             lda #80
 .byOk       sta BossY
-            lda #0
-            sta BossBallOn
+            jmp .bossSkipLogic
+
+.bossLogicGate
+            lda FrameCount
+            and #%00000110
+            beq .doBossLogic
+            jmp .bossSkipLogic
+.doBossLogic
+            lda BossActive
+            cmp #1
+            beq .bossMove
             jmp .bossEnd
 
 .bossMove
-            ; Move boss right (4px since we run every 4th frame)
+            ; Home toward player X (speed scales with level)
             lda BossX
-            clc
-            adc #4
-            sta BossX
-            cmp #160
-            bcc .bossOnScreen
-            lda #0
-            sta BossActive
-            sta BossBallOn
-            lda FrameCount
-            ora #$78
-            sta BossTimer
-            jmp .bossEnd
-
-.bossOnScreen
-            lda BossBallOn
-            bne .moveBossBall
-            lda BossX
-            sec
-            sbc TankX
-            bcs .bxp
-            eor #$FF
-            adc #1
-.bxp        cmp #20
-            bcs .bossEnd
-            lda #1
-            sta BossBallOn
+            cmp TankX
+            beq .bmx
+            bcc .bRight
+            dec BossX
+            dec BossX
+            lda Level
+            cmp #3
+            bcc .bmx
+            dec BossX           ; faster at level 3+
+            cmp #6
+            bcc .bmx
+            dec BossX           ; even faster at level 6+
+            jmp .bmx
+.bRight     inc BossX
+            inc BossX
+            lda Level
+            cmp #3
+            bcc .bmx
+            inc BossX
+            cmp #6
+            bcc .bmx
+            inc BossX
+.bmx
+            ; Home toward player Y (same speed scaling)
             lda BossY
-            clc
-            adc #8
-            sta BossBallY
-            lda #14
-            sta AUDC1
-            lda #8
-            sta AUDV1
-            lda #12
-            sta AUDF1
-
-.moveBossBall
-            ; Move ball toward player Y
-            lda TankY
-            cmp BossBallY       ; if TankY >= BossBallY, ball needs to go down
-            bcc .ballUp
-            ; Ball above player — move down
-            lda BossBallY
-            clc
-            adc #4
-            sta BossBallY
-            cmp #185
+            cmp TankY
+            beq .bossEnd
+            bcc .bDown
+            dec BossY
+            dec BossY
+            lda Level
+            cmp #3
             bcc .bossEnd
-            lda #0
-            sta BossBallOn
+            dec BossY
+            cmp #6
+            bcc .bossEnd
+            dec BossY
             jmp .bossEnd
-.ballUp     ; Ball below player — move up
-            lda BossBallY
-            sec
-            sbc #4
-            sta BossBallY
-            cmp #8
-            bcs .bossEnd
-            lda #0
-            sta BossBallOn
+.bDown      inc BossY
+            inc BossY
+            lda Level
+            cmp #3
+            bcc .bossEnd
+            inc BossY
+            cmp #6
+            bcc .bossEnd
+            inc BossY
 
 .bossEnd
 .bossSkipLogic
-            ; Show boss on P1 every 2nd odd frame
-            lda BossActive
-            beq .noBossFrame
-            lda FrameCount
-            and #$01            ; every 2nd frame = boss on P1
-            bne .noBossFrame
-            lda BossX
-            sta TgtX
-            lda BossY
-            sta TgtY
-            lda #1
-            sta TgtLive
-.noBossFrame
 
             ; Collision
             lda HitFlash
             bne .skipC
-            lda CXP0FB          ; read once
-            bmi .doDeath        ; bit 7 = P0 vs PF
-            and #%01000000      ; bit 6 = P0 vs Ball
-            bne .doDeath
-            lda CXPPMM
+            lda CXP0FB
+            bmi .doDeath        ; P0 vs PF
+            lda CXPPMM          ; P0 vs P1 (boss or target contact)
             bpl .skipC
 .doDeath
             dec Lives
@@ -858,26 +820,78 @@ GameLogic SUBROUTINE
             sta AUDV1
             lda #2
             sta AUDF1
+            ; Reset boss on player death so it doesn't camp spawn
+            lda #0
+            sta BossActive
+            lda FrameCount
+            ora #$78
+            sta BossTimer       ; respawn boss later
 .skipC      sta CXCLR
 
-            ; === EVERY FRAME (after split): flash + gfx + sound ===
+            ; === EVERY FRAME (after split): boss display + flash + gfx + sound ===
 .frameDone
+            ; Show boss on P1 every other frame
+            lda BossActive
+            beq .noBossFrame
+            cmp #1
+            beq .bossAlive
+            ; Boss dying — decrement timer
+            sec
+            sbc #1
+            sta BossActive
+            cmp #1
+            bne .bossShow
+            ; Death animation done
+            lda #0
+            sta BossActive
+            lda FrameCount
+            ora #$78
+            sta BossTimer       ; reset timer for next appearance
+            jmp .noBossFrame
+.bossShow   ; Show explosion at boss position
+            lda FrameCount
+            and #$01
+            bne .noBossFrame
+            lda BossX
+            sta TgtX
+            lda BossY
+            sta TgtY
+            lda #2              ; dying = explosion graphics in kernel
+            sta TgtLive
+            jmp .noBossFrame
+.bossAlive
+            lda FrameCount
+            and #$01
+            bne .noBossFrame
+            lda BossX
+            sta TgtX
+            lda BossY
+            sta TgtY
+            lda #50             ; boss alive marker
+            sta TgtLive
+.noBossFrame
+
+            ; Skip flash logic if no flash
             lda HitFlash
             beq .noFl
             dec HitFlash
             bne .flashCont
+            ; Respawn
             lda #78
             sta TankX
             lda #170
             sta TankY
             lda #0
+            sta MissileOn       ; Bug 7: clear missile on respawn
             sta AUDV1
             lda Lives
             bne .noFl
-            ; Show score first, then game over
             lda #0
             sta SndVol
             sta AUDV0
+            sta BossActive      ; Bug 10: clear boss on game end
+            sta BossBallOn
+            sta ENABL
             lda #MODE_SCORE
             sta GameMode
             lda #150
@@ -894,41 +908,68 @@ GameLogic SUBROUTINE
             lsr
             sta AUDV1
 .noFl
-            ; Tank gfx
+            ; OPT 1+3: Tank gfx — inline BufTankGfx, skip if flashing
             lda HitFlash
             bne .doExp
-            jsr BufTankGfx
-            jmp .gfxDone
-.doExp      lda FrameCount
-            eor HitFlash
-            ldx #7
-.expLp      eor TankGfxBuf,x
+            ; Inline BufTankGfx (saves 12 cycle JSR/RTS)
+            lda TankDir
+            asl
+            asl
+            asl
+            tay
+            ldx #0
+.bufLp      lda TankUpGfx,y
             sta TankGfxBuf,x
-            dex
-            bpl .expLp
+            iny
+            inx
+            cpx #8
+            bne .bufLp
+            jmp .gfxDone
+.doExp      ; OPT 3: Simplified explosion — just 4 bytes
+            lda FrameCount
+            eor HitFlash
+            sta TankGfxBuf
+            sta TankGfxBuf+2
+            sta TankGfxBuf+4
+            sta TankGfxBuf+6
+            eor #$FF
+            sta TankGfxBuf+1
+            sta TankGfxBuf+3
+            sta TankGfxBuf+5
+            sta TankGfxBuf+7
 .gfxDone
 
-            ; Sound decay
-            lda SndType
+            ; OPT 7: Sound decay — minimal check
+            lda SndVol
             beq .nsd
             lda FrameCount
-            and #1
-            bne .nsd
+            lsr                 ; carry = bit 0
+            bcs .nsd            ; skip odd frames
+            dec SndVol
             lda SndVol
-            beq .sndOff
-            sec
-            sbc #1
-            sta SndVol
             sta AUDV0
-            jmp .nsd
-.sndOff     lda #0
-            sta SndVol
-            sta AUDV0
-            sta SndType
+            bne .nsd
+            sta SndType         ; clear type when vol hits 0
 .nsd
-            ; Movement sound
+            ; Channel 1: boss alarm > movement sound > silence
             lda HitFlash
             bne .moveDone
+            ; Boss alarm takes priority
+            lda BossActive
+            cmp #1
+            bne .noAlarm
+            ; Occasional boss ping: short blip every ~1 second
+            lda FrameCount
+            and #%00111111      ; every 64 frames (~1 sec)
+            bne .noAlarm        ; silent most of the time
+            lda #4              ; pure tone
+            sta AUDC1
+            lda #3              ; quiet
+            sta AUDV1
+            lda #6              ; mid-high pitch blip
+            sta AUDF1
+            jmp .moveDone
+.noAlarm
             lda Moving
             beq .silence
             lda #6
@@ -941,6 +982,10 @@ GameLogic SUBROUTINE
 .silence    sta AUDV1
 .moveDone
 
+            ; OPT 5: Win check only on even frames (score only changes on even)
+            lda FrameCount
+            lsr
+            bcs .noWin
             lda Score
             cmp #40
             bcc .noWin
@@ -948,6 +993,9 @@ GameLogic SUBROUTINE
             sta SndVol
             sta AUDV0
             sta AUDV1
+            sta BossActive
+            sta BossBallOn
+            sta ENABL
             lda #MODE_SCORE
             sta GameMode
             lda #150
@@ -1006,25 +1054,6 @@ MoveTargets SUBROUTINE
             bcc .loop
 .done       rts
 
-BufTankGfx SUBROUTINE
-            ; Opt 5: compute table base offset, single copy loop
-            lda TankDir
-            asl
-            asl
-            asl                 ; dir * 8
-            tay                 ; Y = offset into sprite tables
-            ldx #0
-.copy       lda TankUpGfx,y     ; all 4 tables are contiguous
-            sta TankGfxBuf,x
-            iny
-            inx
-            cpx #TANK_H
-            bne .copy
-            rts
-
-;===============================================================================
-; LEVEL UP / SCORE / GAME OVER LOGIC
-;===============================================================================
 LvlUpLogic SUBROUTINE
             dec StateTimer
             bne .wait
@@ -1046,6 +1075,9 @@ LvlUpLogic SUBROUTINE
             lda #0
             sta MissileOn
             sta HitFlash
+            sta BossActive      ; Bug 6: clear boss on level change
+            sta BossBallOn
+            sta ENABL
             sta CXCLR
             lda #MODE_PLAY
             sta GameMode
@@ -1064,15 +1096,15 @@ LvlUpLogic SUBROUTINE
             dec MelodyTimer
             bne .skip
             ldx MelodyIdx
-            cpx #12             ; 12 notes
+            cpx #6              ; 6 notes
             bcs .jingleDone
             lda VictoryNotes,x
             sta AUDF1
-            lda #4              ; pure tone
+            lda #12             ; warm lead tone
             sta AUDC1
             lda VictoryVols,x
             sta AUDV1
-            lda #8              ; 8 frames per note (fast arpeggio)
+            lda #15             ; slower, more pleasant
             sta MelodyTimer
             inc MelodyIdx
             jmp .skip
@@ -1277,22 +1309,6 @@ DrawGame SUBROUTINE
             asl
             sta HMM0
             sta RESM0
-            ; Position boss ball (Ball object)
-            lda BossBallOn
-            beq .skipBallPos
-            lda BossX           ; ball X = boss X
-            sec
-            sta WSYNC
-.dbl        sbc #15
-            bcs .dbl
-            eor #7
-            asl
-            asl
-            asl
-            asl
-            sta HMBL
-            sta RESBL
-.skipBallPos
             sta WSYNC
             sta HMOVE
 
@@ -1316,14 +1332,21 @@ DrawGame SUBROUTINE
             lda #$00            ; black field background
             sta COLUBK
 .colorDone
-            ; Target color: dying targets flash white
+            ; Target/boss color
             lda TgtLive
-            cmp #2
+            cmp #50             ; boss?
+            bcs .bossColor
+            cmp #2              ; dying target?
             bcc .normTgt
+            ; Dying target: flash white
             lda FrameCount
             and #2
             beq .tgtWhite
             lda TgtColor
+            jmp .setTgt
+.bossColor
+            ; Boss: bright yellow/white, distinct from targets
+            lda #$1E            ; bright yellow
             jmp .setTgt
 .tgtWhite   lda #$0E
             jmp .setTgt
@@ -1404,6 +1427,8 @@ DrawGame SUBROUTINE
             lda WallColor
             ora #$08
             sta COLUPF
+
+            ; Boss ball uses software collision (no ENABL)
 
             lda TankY
             clc
@@ -1500,20 +1525,6 @@ DrawGame SUBROUTINE
             sta ENAM0           ; 3
 
 .mslDone
-            ; Boss ball (Ball object) — 2 lines tall
-            lda BossBallOn      ; 3
-            beq .noBall         ; 2/3
-            txa                 ; 2
-            sec                 ; 2
-            sbc BossBallY       ; 3
-            cmp #2              ; 2
-            bcs .noBall         ; 2/3
-            lda #2              ; 2
-            sta ENABL           ; 3
-            jmp .ballDone       ; 3
-.noBall     lda #0              ; 2
-            sta ENABL           ; 3
-.ballDone
             inx                 ; 2
             cpx #184            ; 2
             beq .fEnd           ; 2/3
@@ -2186,8 +2197,9 @@ TargetGfx
 LvlField    .byte $D6,$B4,$96,$F6,$C6,$06,$76,$46
 LvlWall     .byte $D2,$B0,$94,$F2,$C2,$04,$72,$44
 LvlTgt      .byte $36,$2A,$1C,$44,$C8,$9A,$36,$1C
-LvlDirX     .byte $00,$01,$FF,$01,$FF,$01,$FF,$01
-LvlDirY     .byte $00,$00,$01,$FF,$01,$FF,$01,$FF
+; All levels have movement now
+LvlDirX     .byte $01,$FF,$01,$FF,$01,$FF,$01,$FF
+LvlDirY     .byte $00,$01,$FF,$01,$FF,$01,$FF,$01
 
 ; Obstacle density masks per level (more bits = more obstacles)
 ; Level 0: very sparse, Level 7: very dense
@@ -2210,9 +2222,9 @@ MelodyVols  .byte 12,11,10,9,8,7,5,3
 GONotes     .byte 15,17,20,22,25,27,30,31
 GOVols      .byte 6,5,5,4,4,3,3,2
 
-; Victory jingle - ascending major arpeggio with flourish (12 notes)
-VictoryNotes .byte 20,17,15,12,10,8,6,8,6,4,6,4
-VictoryVols  .byte 8,9,10,11,12,12,13,12,13,14,12,10
+; Victory jingle - gentle ascending chime (6 notes)
+VictoryNotes .byte 20,15,12,10,8,6
+VictoryVols  .byte 6,7,7,8,8,6
 
 KeithR0     .byte $50,$50,$30,$10,$30,$50,$50,$50
 KeithR1     .byte $EE,$84,$84,$E4,$84,$84,$EE,$EE
