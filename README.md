@@ -4,7 +4,7 @@ A tank shooter for the Atari 2600, written in 6502 assembly.
 
 ## 🎮 Play in Browser
 
-[**Play Cyloid Now**](https://javatari.org?ROM=https://raw.githubusercontent.com/keithadler/cyloid/main/cyloid.rom)
+[**Play Cyloid Now**](https://javatari.org?ROM=https://raw.githubusercontent.com/keithadler/cyloid/refs/heads/main/cyloid.rom)
 
 Arrow keys to move, Space to fire.
 
