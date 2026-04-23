@@ -13,7 +13,7 @@ Arrow keys to move, Space to fire.
 ## Build
 
 ```bash
-brew install dasm        # macOS
+brew install dasm        # macOS (or download from https://github.com/dasm-assembler/dasm)
 make
 ```
 
@@ -32,6 +32,10 @@ open -a Stella cyloid.rom
 |-----|--------|
 | Arrow keys | Move tank |
 | Space | Fire missile |
+| F1 | Select |
+| F2 | Reset |
+
+---
 
 ## Game Overview
 
@@ -41,25 +45,35 @@ Navigate your tank through obstacle-filled arenas, destroy all targets to advanc
 
 - Destroy all targets on each level to advance
 - Survive 8 levels with increasing difficulty
-- Score 40 points to win
-- Each target = 1 point, boss = 5 points
+- Score 99 points to win
+- Targets = 1-5 points (streak bonus), Boss = 0 points (obstacle only)
 
 ### Lives
 
 - 3 lives per game
 - Remaining lives shown as cyan pips in the top border
 - Death triggers a 45-frame explosion animation at the death location
-- Tank respawns at center-bottom (78, 170) after explosion
+- Tank respawns at center-bottom after explosion
+- 45 frames of invincibility after respawn
 
 ### Enemies
 
-- **Targets** (green diamonds): 2-5 per level, bounce off walls
-- **Boss** (bright yellow): homing kamikaze attacker, appears every ~4 seconds
-  - Homes toward player position
-  - Speed increases with level (2px → 3px → 4px per update)
-  - Spawns from random edge (left or right)
+- **Targets** (colored diamonds): 2-5 per level, bounce off walls
+  - Speed increases with level
+  - Last 1-2 targets move at double speed
+- **Boss** (bright yellow): homing kamikaze attacker
+  - Appears every ~4 seconds from a random edge
+  - Homes directly toward player position
+  - Speed scales with level (2px/update → 4px/update)
   - Resets when it kills the player
-  - Worth 5 points when shot
+  - Shooting it triggers an explosion but awards no points
+
+### Scoring
+
+- Each target hit scores 1 + streak bonus (consecutive hits without missing)
+- Streak: 1st hit = 1pt, 2nd = 2pt, 3rd = 3pt, 4th = 4pt, 5th+ = 5pt
+- Streak resets when missile hits a wall or goes off-screen
+- Screen flashes white when a level is completed
 
 ### Obstacles
 
@@ -67,149 +81,262 @@ Navigate your tank through obstacle-filled arenas, destroy all targets to advanc
 - Density increases with level (sparse on level 0, dense by level 5+)
 - Touching walls kills the player
 - Missiles stop when hitting walls (with a sound effect)
-- Pattern randomized each level
+- Pattern randomized each level using LFSR
 
 ### Levels
 
-8 levels (0-7) that cycle, each with:
-- Unique field/wall/target color palette
-- Different obstacle density
-- Different target movement directions
-- Increasing boss speed
+8 levels (0-7) that cycle, each with unique:
+- Field/wall/target color palette
+- Obstacle density (controlled by per-level bitmask)
+- Target movement directions and speed
+- Boss homing speed
 
-### Screens
+### Title Sequence
 
-| Screen | Description |
-|--------|-------------|
-| KEITH | Title — cycling purple text |
-| ADLER | Title — cycling purple text |
-| PRESENTS | Title — gold text, asymmetric PF (no mirror) |
-| CYLOID | Title — green text, asymmetric PF, tank flyby animation |
-| Gameplay | Black field, colored obstacles, tank + targets + boss |
-| Level Score | Score as digit sprites (P0/P1), victory jingle |
-| Final Score | Score display after last death, sad melody |
-| GAME OVER | Asymmetric PF text, subtle somber melody |
+| Screen | Technique | Duration |
+|--------|-----------|----------|
+| KEITH | Reflected PF text | 3 sec |
+| ADLER | Reflected PF text | 2.5 sec |
+| PRESENTS | Asymmetric PF (no mirror) | 2.5 sec |
+| CYLOID | Asymmetric PF + P0 tank flyby | 3 sec |
+| Black | Blank | 1.5 sec |
+
+### Game Flow
+
+```
+Title Sequence → Gameplay (wait for first move)
+  ↓ (all targets destroyed)
+Level Score Screen (victory jingle) → Next Level
+  ↓ (last life lost)
+Final Score Screen (sad melody) → GAME OVER (somber melody) → Title
+  ↓ (score reaches 99)
+Final Score Screen → GAME OVER → Title
+```
+
+---
 
 ## Technical Architecture
 
-### Hardware Usage
+This section is a reference for anyone learning Atari 2600 programming. The 2600 has no frame buffer — the CPU must feed graphics data to the TIA chip in real-time as the electron beam scans each line ("racing the beam").
 
-| TIA Object | Usage |
-|------------|-------|
-| Player 0 (P0) | Tank sprite (8 lines, 4 directional graphics) |
-| Player 1 (P1) | Targets (flickered), boss, lives display (NUSIZ copies) |
-| Missile 0 (M0) | Player bullet (4 clocks wide, 4 lines tall) |
-| Playfield (PF) | Obstacles, walls, text screens, lives pips |
-| Ball (BL) | Unused (removed — was boss bullet) |
+### The Hardware
+
+| Component | Details |
+|-----------|---------|
+| CPU | 6507 (6502 variant), 1.19 MHz |
+| Graphics | TIA (Television Interface Adapter) |
+| RAM | 128 bytes ($80-$FF), shared with stack |
+| ROM | 4KB at $F000-$FFFF (bankswitching for larger) |
+| Input | 2 joystick ports, console switches |
+| Audio | 2 channels, 32 frequencies, 16 waveforms |
+
+### TIA Objects
+
+The TIA provides 5 movable objects. That's ALL you get — no tiles, no sprites, no layers:
+
+| Object | Width | Cyloid Usage |
+|--------|-------|-------------|
+| Player 0 (P0) | 8 pixels | Tank sprite (4 directional graphics) |
+| Player 1 (P1) | 8 pixels | Targets (flickered) + Boss (yellow) |
+| Missile 0 (M0) | 1-8 clocks | Player bullet |
+| Missile 1 (M1) | 1-8 clocks | Unused |
+| Ball (BL) | 1-8 clocks | Unused |
+| Playfield (PF) | 40 pixels | Obstacles, walls, title text, lives |
+
+### Playfield Registers
+
+The playfield is 40 pixels wide, defined by 3 registers (20 pixels, mirrored or repeated):
+
+```
+PF0: 4 pixels  (bits 4,5,6,7 → pixels 0-3)
+PF1: 8 pixels  (bits 7,6,5,4,3,2,1,0 → pixels 4-11)  ← reversed!
+PF2: 8 pixels  (bits 0,1,2,3,4,5,6,7 → pixels 12-19)
+```
+
+In reflect mode (CTRLPF bit 0 = 1), the right half mirrors the left. In repeat mode, it duplicates.
 
 ### Frame Timing
 
+NTSC requires exactly 262 scanlines per frame at 60 Hz:
+
 ```
-VSYNC:    3 lines
-VBLANK:  37 lines (TIM64T = 43)
-Visible: 192 lines (8 border + 176 field + 8 border)
-Overscan: 30 lines
-Total:   262 lines (NTSC standard)
+VSYNC:     3 lines  — Tell TV to start new frame
+VBLANK:   37 lines  — CPU processing time (game logic runs here)
+Visible:  192 lines  — The picture (kernel runs here)
+Overscan:  30 lines  — More CPU time (cleanup)
+Total:    262 lines
+```
+
+Each scanline = 76 CPU cycles. The kernel must complete ALL graphics updates within 76 cycles per line or the display glitches.
+
+### VBLANK Timer
+
+Instead of counting scanlines manually during VBLANK, use the RIOT timer:
+
+```asm
+lda #43         ; 43 × 64 = 2752 cycles ≈ 37 scanlines
+sta TIM64T      ; Start timer
+; ... do game logic ...
+lda INTIM       ; Check timer
+bne .-2         ; Wait until expired
+sta WSYNC       ; Sync to scanline boundary
 ```
 
 ### Kernel Design
 
-2-line kernel with cycle-tight budget:
+Cyloid uses a **2-line kernel** — each iteration draws 2 scanlines:
 
-- **Line 1** (max 70 cycles): Obstacle PF check + tank sprite (P0)
-- **Line 2** (max 58 cycles): Target sprite (P1) + missile (M0)
+```
+Line 1: Obstacle PF check + Tank sprite (P0)     — max 72 cycles
+Line 2: Target sprite (P1) + Missile (M0)         — max 58 cycles
+```
 
-Obstacle bands: `(scanline & $1F) >= $18` — 8-line bands every 32 lines.
+The obstacle check uses a bitmask trick:
+```asm
+txa             ; current scanline
+and #$1F        ; modulo 32
+cmp #$18        ; >= 24?
+bcc .noObstacle ; if not, skip
+; Show obstacle band...
+```
 
-### Frame Split
+This creates 8-scanline obstacle bands every 32 lines with zero per-line data lookups.
 
-Game logic is split across two frames to fit in VBLANK:
+### Horizontal Positioning
 
-- **Every frame**: Joystick input, fire button, flash/respawn, tank graphics, sound
-- **Even frames**: Missile movement, hit detection (2 targets + boss)
-- **Odd frames**: Wall collision, death timers, target movement, flicker select, boss logic, player collision
+The 2600 has no X-position registers. To position an object horizontally, you use the "divide by 15" trick:
+
+```asm
+lda ObjectX     ; desired X position (0-159)
+sec
+sta WSYNC       ; wait for start of line
+.loop:
+sbc #15         ; subtract 15 (one TIA "section")
+bcs .loop       ; keep going until negative
+eor #7          ; convert remainder to fine motion
+asl
+asl
+asl
+asl
+sta HMxx        ; set fine motion (-8 to +7 pixels)
+sta RESxx       ; set coarse position (where the loop ended)
+sta WSYNC
+sta HMOVE       ; apply fine motion
+```
 
 ### Asymmetric Playfield
 
-PRESENTS, CYLOID, and GAME OVER screens use mid-scanline PF register updates in reflect mode:
+For non-mirrored text (PRESENTS, CYLOID, GAME OVER), Cyloid updates PF registers mid-scanline:
 
-1. Write left-half PF0/PF1/PF2 at cycle ~7-21
-2. Wait 10 NOPs (20 cycles) for beam to pass left PF2
-3. Write right-half PF2/PF1/PF0 at cycle ~45-62
+```
+Cycle  0-21: Write left-half PF0, PF1, PF2
+Cycle 21-41: NOP sled (10 NOPs = 20 cycles)
+Cycle 41-62: Write right-half PF2, PF1, PF0 (reflect mode reversal)
+```
 
-This gives 40 unique pixels per line — no mirroring or repeating.
+In reflect mode, the right half draws PF2 first (cycle ~44), then PF1 (~52), then PF0 (~60). By updating registers between the left and right draw windows, each half shows different data.
 
 ### Flicker Multiplexing
 
-P1 is shared between up to 5 targets and the boss:
-- Targets cycle through FlickerIdx each odd frame
-- Boss overrides P1 every other frame when active
-- Dying targets/boss show explosion graphics (random XOR pattern)
+With only 2 player sprites, Cyloid shows up to 5 targets + 1 boss by cycling which one P1 draws each frame:
+
+```
+Frame 1: P1 = Target 0
+Frame 2: P1 = Boss
+Frame 3: P1 = Target 1
+Frame 4: P1 = Boss
+Frame 5: P1 = Target 2
+...
+```
+
+At 60fps, each object appears at 12-30fps — visible flicker but playable. This is the same technique used by Space Invaders on the 2600.
 
 ### Collision Detection
 
-| Collision | Method | Register |
-|-----------|--------|----------|
-| Tank vs walls | Hardware | CXP0FB bit 7 |
-| Tank vs target/boss | Hardware | CXPPMM bit 7 |
-| Missile vs walls | Hardware | CXM0FB bit 7 |
-| Missile vs targets | Software | Distance check (12px box) |
-| Missile vs boss | Software | Distance check (12px box) |
+The TIA provides hardware collision registers — latches that set when objects overlap on screen:
 
-### Sound Design
+| Register | Bits | Cyloid Usage |
+|----------|------|-------------|
+| CXP0FB | bit 7: P0-PF | Tank vs walls (death) |
+| CXPPMM | bit 7: P0-P1 | Tank vs target/boss (death) |
+| CXM0FB | bit 7: M0-PF | Missile vs walls (stop bullet) |
+| CXCLR | write-any | Clear all collision latches |
 
-| Sound | Channel | Waveform | Notes |
-|-------|---------|----------|-------|
-| Shoot | Ch0 | White noise (15) | Fast decay, dropping pitch |
-| Hit target | Ch0 | Lead tone (12) | Medium decay |
-| Wall hit | Ch0 | Low buzz (3) | Sad low pitch |
-| Death | Ch0+Ch1 | Noise (8) + buzz (7) | Explosion + siren |
-| Engine | Ch1 | Bass rumble (6) | While moving, vol 3 |
-| Boss ping | Ch1 | Pure tone (4) | Every ~1 sec when boss active |
-| Victory jingle | Ch1 | Warm lead (12) | 6-note ascending |
-| Score melody | Ch1 | Warm lead (12) | 8-note descending |
-| Game over | Ch1 | Warm lead (12) | 8-note somber |
+Missile vs target uses **software collision** (distance check) because the missile and targets are on different frames due to the frame-split architecture.
+
+### Frame-Split Architecture
+
+Game logic is too heavy for one VBLANK period. Cyloid splits work across two frames:
+
+```
+EVEN frames: Missile movement, hit detection (2 targets + boss)
+ODD frames:  Wall collision, death timers, target movement, flicker, boss AI, player collision
+EVERY frame: Joystick, fire button, flash/respawn, tank graphics, sound
+```
+
+This halves the worst-case VBLANK time from ~1800 cycles to ~900 cycles.
+
+### Sound
+
+The TIA has 2 audio channels, each with:
+- `AUDCx` — waveform (0-15): pure tone, noise, buzz, etc.
+- `AUDFx` — frequency divider (0-31): lower = higher pitch
+- `AUDVx` — volume (0-15)
+
+**Critical**: TIA registers are write-only. You cannot read back `AUDV0` to decay the volume — you must track it in RAM (`SndVol` variable).
+
+### LFSR Random Number Generator
+
+```asm
+Random:
+    lda RandSeed
+    lsr             ; shift right, bit 0 → carry
+    bcc .noTap
+    eor #$B4        ; XOR with tap polynomial
+.noTap:
+    sta RandSeed    ; store new seed
+    rts             ; random value in A
+```
+
+Produces 255 unique values before repeating. Seed must be non-zero.
 
 ### Memory Map
 
-**RAM** ($80-$D8): ~88 bytes used, ~39 bytes free before stack
+```
+$0000-$002C  TIA registers (write)
+$0030-$003D  TIA registers (read — collision, input)
+$0080-$00FF  RAM (128 bytes)
+  $80-$D8    Game variables (~88 bytes)
+  $D9-$FF    Stack (~39 bytes, grows down from $FF)
+$0280-$0297  RIOT registers (timer, I/O)
+$F000-$FFF9  ROM (4086 bytes of code + data)
+$FFFA-$FFFF  Vectors (NMI, RESET, IRQ — 6 bytes)
+```
 
-**ROM** ($F000-$FFFA): ~3700 bytes used, ~400 bytes free
-
-### Sprite Data
-
-4 tank directions (8 bytes each, contiguous for indexed access):
-- TankUpGfx, TankRightGfx, TankDownGfx, TankLeftGfx
-
-Target: 6-byte diamond shape (TargetGfx)
-
-Digit sprites: 10 digits × 8 bytes (5px wide centered in 8px)
-
-### Level Data Tables
-
-| Table | Size | Description |
-|-------|------|-------------|
-| LvlField | 8 | Field background color per level |
-| LvlWall | 8 | Wall/obstacle color per level |
-| LvlTgt | 8 | Target color per level |
-| LvlDirX | 8 | Target X movement direction |
-| LvlDirY | 8 | Target Y movement direction |
-| LvlObsMask | 8 | Obstacle density bitmask |
-| SafeYTbl | 5 | Safe Y spawn positions for targets |
+---
 
 ## Repository
 
-- `game.asm` — Main game source (~2000 lines)
-- `cyloid.rom` — Pre-built ROM (4KB, playable in any Atari 2600 emulator)
-- `vcs.h` — TIA/RIOT register definitions
-- `macro.h` — Standard macros (CLEAN_START, VERTICAL_SYNC, SLEEP)
-- `Makefile` — Build automation
-- `CHANGELOG.md` — Version history
-- `LICENSE` — MIT License
+| File | Description |
+|------|-------------|
+| `game.asm` | Main game source (~2000 lines, heavily commented) |
+| `cyloid.rom` | Pre-built ROM (4KB, playable in any 2600 emulator) |
+| `vcs.h` | TIA/RIOT register definitions (standard include) |
+| `macro.h` | Standard macros: CLEAN_START, VERTICAL_SYNC, SLEEP |
+| `Makefile` | Build automation (`make` to build, `make clean` to reset) |
+| `CHANGELOG.md` | Complete version history (v0.1 through v1.0) |
+| `LICENSE` | MIT License |
 
 ## Contributing
 
-Contributions welcome! Fork the repo, make changes, and submit a pull request. The game is written in 6502 assembly for the DASM assembler.
+Contributions welcome! Fork the repo, make changes, and submit a pull request. The game is written in 6502 assembly for the [DASM assembler](https://github.com/dasm-assembler/dasm).
+
+## Resources for Learning 2600 Programming
+
+- [2600 Programming For Newbies](https://forums.atariage.com/topic/27221-session-9-6502-and-dasm-assembling-the-basics/) — AtariAge tutorial series
+- [Stella Programmer's Guide](https://alienbill.com/2600/101/docs/stella.html) — TIA register reference
+- [6502 Instruction Set](https://www.masswerk.at/6502/6502_instruction_set.html) — complete opcode reference
+- [Atari 2600 Programming](https://8bitworkshop.com/v3.11.0/?platform=vcs) — 8bitworkshop online IDE
 
 ## Acknowledgments
 

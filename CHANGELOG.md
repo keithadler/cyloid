@@ -1,5 +1,34 @@
 # Changelog - Cyloid
 
+## v1.0 - April 23, 2026
+
+First public release.
+
+### Features
+- 8 levels with increasing difficulty, unique color palettes, and obstacle patterns
+- 2-5 targets per level with bouncing movement and speed-up on last targets
+- Homing boss attacker (Player 2) with level-scaled speed
+- 3 lives, streak-based scoring (consecutive hits multiply points)
+- Title sequence: KEITH ADLER / PRESENTS / CYLOID with asymmetric PF and tank flyby
+- Score display between levels and after game over
+- GAME OVER screen with asymmetric PF text
+- LFSR pseudo-random number generator for varied gameplay
+- Screen flash on level complete
+- Boss warning flash in border
+- Missile trail effect (6-scanline bullet)
+- Wait-for-input on first level
+
+### Technical
+- 4KB ROM, NTSC (262 lines, 60fps)
+- 2-line kernel: 72 cycles max (line 1), 58 cycles max (line 2)
+- Frame-split game logic (even/odd frames)
+- Asymmetric playfield for non-mirrored text
+- Flicker multiplexing for 5 targets + boss on 2 player sprites
+- Hardware collision (CXP0FB, CXPPMM, CXM0FB) + software distance checks
+- Comprehensive code documentation
+- Open source under MIT License
+- Playable in browser via Javatari.js
+
 ## v0.13 - April 23, 2026
 
 ### Documentation
