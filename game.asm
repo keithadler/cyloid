@@ -195,7 +195,7 @@ InitGame SUBROUTINE
             sta NumTgts
             sta BossActive
             sta BossBallOn
-            lda #240            ; boss appears after ~4 seconds
+            lda #120            ; boss appears after ~2 seconds
             sta BossTimer
             lda #3
             sta Lives
@@ -624,6 +624,7 @@ GameLogic SUBROUTINE
             sta BossActive
             sta BossBallOn
             sta MissileOn
+            sta ENABL           ; clear ball sprite immediately
             lda Score
             clc
             adc #5
@@ -785,10 +786,11 @@ GameLogic SUBROUTINE
 
 .moveBossBall
             ; Move ball toward player Y
+            lda TankY
+            cmp BossBallY       ; if TankY >= BossBallY, ball needs to go down
+            bcc .ballUp
+            ; Ball above player — move down
             lda BossBallY
-            cmp TankY
-            bcs .ballUp
-            ; Ball below player — move down
             clc
             adc #4
             sta BossBallY
@@ -797,7 +799,8 @@ GameLogic SUBROUTINE
             lda #0
             sta BossBallOn
             jmp .bossEnd
-.ballUp     ; Ball above player — move up
+.ballUp     ; Ball below player — move up
+            lda BossBallY
             sec
             sbc #4
             sta BossBallY
@@ -808,11 +811,11 @@ GameLogic SUBROUTINE
 
 .bossEnd
 .bossSkipLogic
-            ; Show boss on P1 every 3rd frame (use simple counter)
+            ; Show boss on P1 every 2nd odd frame
             lda BossActive
             beq .noBossFrame
             lda FrameCount
-            and #$03            ; every 4th frame = boss on P1
+            and #$01            ; every 2nd frame = boss on P1
             bne .noBossFrame
             lda BossX
             sta TgtX
@@ -825,11 +828,9 @@ GameLogic SUBROUTINE
             ; Collision
             lda HitFlash
             bne .skipC
-            lda CXP0FB
-            bmi .doDeath        ; P0 vs PF (bit 7)
-            ; Check P0 vs Ball (boss bullet) — bit 6 of CXP0FB
-            lda CXP0FB
-            and #%01000000
+            lda CXP0FB          ; read once
+            bmi .doDeath        ; bit 7 = P0 vs PF
+            and #%01000000      ; bit 6 = P0 vs Ball
             bne .doDeath
             lda CXPPMM
             bpl .skipC
@@ -873,12 +874,13 @@ GameLogic SUBROUTINE
             sta AUDV1
             lda Lives
             bne .noFl
+            ; Show score first, then game over
             lda #0
             sta SndVol
             sta AUDV0
-            lda #MODE_OVER
+            lda #MODE_SCORE
             sta GameMode
-            lda #180
+            lda #150
             sta StateTimer
             lda #0
             sta MelodyIdx
@@ -946,9 +948,9 @@ GameLogic SUBROUTINE
             sta SndVol
             sta AUDV0
             sta AUDV1
-            lda #MODE_OVER
+            lda #MODE_SCORE
             sta GameMode
-            lda #180
+            lda #150
             sta StateTimer
             lda #0
             sta MelodyIdx
@@ -1081,15 +1083,18 @@ LvlUpLogic SUBROUTINE
 ScoreLogic SUBROUTINE
             dec StateTimer
             bne .wait
+            ; Score done → go to GAME OVER screen
             lda #0
             sta AUDV0
             sta AUDV1
-            lda #MODE_TITLE
+            lda #MODE_OVER
             sta GameMode
-            lda #TITLE_KEITH
-            sta SubState
             lda #180
             sta StateTimer
+            lda #0
+            sta MelodyIdx
+            lda #1
+            sta MelodyTimer
             jmp WaitDraw
 .wait       lda StateTimer
             cmp #149
@@ -1100,7 +1105,7 @@ ScoreLogic SUBROUTINE
             lda #1
             sta MelodyTimer
 .playJingle
-            ; Score screen uses game over melody (already defined)
+            ; Sad melody on score screen (descending)
             dec MelodyTimer
             bne .skip
             ldx MelodyIdx
@@ -1147,35 +1152,38 @@ BuildDigits SUBROUTINE
 OverLogic SUBROUTINE
             dec StateTimer
             bne .melody
-            ; Go to score screen (not directly to title)
+            ; Game Over done → return to title
             lda #0
             sta SndVol
             sta AUDV0
             sta AUDV1
-            lda #MODE_SCORE
+            lda #MODE_TITLE
             sta GameMode
-            lda #150
+            lda #TITLE_KEITH
+            sta SubState
+            lda #180
             sta StateTimer
             jmp WaitDraw
 .melody
+            ; Dramatic game over melody (different from score screen)
             dec MelodyTimer
             bne .w
             ldx MelodyIdx
             cpx #8
             bcs .melDone
-            lda MelodyNotes,x
+            lda GONotes,x
             sta AUDF1
-            lda #12
+            lda #12             ; warm lead tone — softer
             sta AUDC1
-            lda MelodyVols,x
+            lda GOVols,x
             sta AUDV1
-            lda #25
+            lda #30             ; slower tempo
             sta MelodyTimer
             inc MelodyIdx
             jmp .w
 .melDone    lda #0
             sta AUDV1
-            lda #255            ; Bug 8: prevent wrap-around re-triggering
+            lda #255
             sta MelodyTimer
 .w          jmp WaitDraw
 
@@ -1288,20 +1296,7 @@ DrawGame SUBROUTINE
             sta WSYNC
             sta HMOVE
 
-            ; Turn on display — set black first, then WSYNC+VBLANK
-            lda #0
-            sta COLUBK
-            sta COLUPF
-            sta PF0
-            sta PF1
-            sta PF2
-            sta GRP0
-            sta GRP1
-            sta ENAM0
-            sta WSYNC           ; this line is the first visible line (black)
-            sta VBLANK          ; display fully on for next line
-
-            ; Colors
+            ; Colors (VBLANK already turned off in lives area above)
             lda HitFlash
             beq .nc
             lda FrameCount
@@ -1356,17 +1351,52 @@ DrawGame SUBROUTINE
 
             ldx #0
 
-            ; Top border: 8 black lines
+            ; Top border: 8 black lines with life indicators
+            ; Use PF1 for small centered pips (no P1 interference)
             lda #$00
             sta COLUBK
-            sta COLUPF
             sta PF0
-            sta PF1
             sta PF2
+            sta GRP0
+            sta GRP1
+            ; Lives as PF1 centered blocks
+            lda Lives
+            cmp #3
+            bcc .lp2
+            lda #%00101010      ; 3 pips centered
+            jmp .lpSet
+.lp2        cmp #2
+            bcc .lp1
+            lda #%00101000      ; 2 pips
+            jmp .lpSet
+.lp1        cmp #1
+            bcc .lp0
+            lda #%00100000      ; 1 pip
+            jmp .lpSet
+.lp0        lda #0
+.lpSet      sta PF1
+            lda #$9E            ; cyan
+            sta COLUPF
+
+            ; Turn on display
+            sta WSYNC
+            lda #0
+            sta VBLANK          ; A must be 0 to turn off blanking
+
+            ldx #0
 .topBorder  sta WSYNC
             inx
-            cpx #8              ; 8 black border lines
+            cpx #6              ; show pips for 6 lines
             bne .topBorder
+            ; Clear for last 2 lines
+            lda #0
+            sta PF1
+            sta COLUPF
+            sta WSYNC
+            inx
+            sta WSYNC
+            inx
+            ; X=8, total border = 8 lines
 
             ; Field area: 176 lines
             lda #$00            ; black background
@@ -1522,10 +1552,12 @@ DrawDigitScreen SUBROUTINE
 
             lda TensOff
             cmp #$FF
-            beq .single
+            bne .twoDigits
+            jmp .single
+.twoDigits
 
-            ; TWO DIGITS: P0 at X=65, P1 at X=85
-            lda #65
+            ; TWO DIGITS: P0 at X=70, P1 at X=90 (centered)
+            lda #70
             sec
             sta WSYNC
 .d0         sbc #15
@@ -1537,7 +1569,7 @@ DrawDigitScreen SUBROUTINE
             asl
             sta HMP0
             sta RESP0
-            lda #85
+            lda #90
             sec
             sta WSYNC
 .d1         sbc #15
@@ -1559,14 +1591,15 @@ DrawDigitScreen SUBROUTINE
             sta COLUP0
             sta COLUP1
 
-            ldx #84
+            ; Top: 72 lines
+            ldx #72
 .top2       sta WSYNC
             dex
             bne .top2
 
+            ; Score digits: 16 lines
             ldy #0
-.dr2        ; Use Y as row offset, add to base offsets
-            tya
+.dr2        tya
             clc
             adc TensOff
             tax
@@ -1587,15 +1620,17 @@ DrawDigitScreen SUBROUTINE
             lda #0
             sta GRP0
             sta GRP1
-            ldx #88
+
+            ; Bottom: 192 - 72 - 16 = 104 lines
+            ldx #104
 .bot2       sta WSYNC
             dex
             bne .bot2
             jmp DoOverscan
 
 .single
-            ; ONE DIGIT: P0 centered at X=76
-            lda #76
+            ; ONE DIGIT: P0 at X=78 (centered)
+            lda #78
             sec
             sta WSYNC
 .d0s        sbc #15
@@ -1616,11 +1651,13 @@ DrawDigitScreen SUBROUTINE
             ora #$C0
             sta COLUP0
 
-            ldx #86
+            ; Top: 74 lines
+            ldx #74
 .top1       sta WSYNC
             dex
             bne .top1
 
+            ; Score digit: 16 lines
             ldy #0
 .dr1        tya
             clc
@@ -1636,7 +1673,9 @@ DrawDigitScreen SUBROUTINE
 
             lda #0
             sta GRP0
-            ldx #88
+
+            ; Bottom: 192 - 74 - 16 = 102 lines
+            ldx #102
 .bot1       sta WSYNC
             dex
             bne .bot1
@@ -1646,6 +1685,9 @@ DrawDigitScreen SUBROUTINE
 ; GAME OVER
 ;===============================================================================
 DrawOver SUBROUTINE
+            sta WSYNC
+            lda #0
+            sta VBLANK
             lda #$00
             sta COLUBK
             sta GRP0
@@ -1657,69 +1699,109 @@ DrawOver SUBROUTINE
             sta PF2
             sta COLUP0
             sta COLUP1
+            lda #%00000001      ; reflect mode for asymmetric
+            sta CTRLPF
+
+            ; Top: 46 lines
+            ldx #46
+.top        sta WSYNC
+            dex
+            bne .top
+
+            ; GAME text: 8 rows × 5 scanlines + 8 gap = 48 lines
+            ldy #0
+.gameRow
             lda FrameCount
             lsr
             and #$0E
             ora #$20
             sta COLUPF
-            lda #%00000001
-            sta CTRLPF
-
-            ldx #48
-.top        sta WSYNC
-            dex
-            bne .top
-
-            ldy #0
-.gameRow    lda GameR0,y
-            sta TempVar
             ldx #5
 .gameSc     sta WSYNC
-            lda TempVar
+            lda GameLPF0,y
             sta PF0
-            lda GameR1,y
+            lda GameLPF1,y
             sta PF1
-            lda GameR2,y
+            lda GameLPF2,y
             sta PF2
+            nop
+            nop
+            nop
+            nop
+            nop
+            nop
+            nop
+            nop
+            nop
+            nop
+            lda GameRPF2,y
+            sta PF2
+            lda GameRPF1,y
+            sta PF1
+            lda GameRPF0,y
+            sta PF0
             dex
             bne .gameSc
+            sta WSYNC
+            lda #0
+            sta PF0
+            sta PF1
+            sta PF2
             iny
             cpy #8
             bne .gameRow
 
+            ; Gap: 16 lines
+            ldx #16
+.gap        sta WSYNC
+            dex
+            bne .gap
+
+            ; OVER text: 8 rows × 5 scanlines + 8 gap = 48 lines
+            ldy #0
+.overRow
+            lda FrameCount
+            lsr
+            and #$0E
+            ora #$20
+            sta COLUPF
+            ldx #5
+.overSc     sta WSYNC
+            lda OverLPF0,y
+            sta PF0
+            lda OverLPF1,y
+            sta PF1
+            lda OverLPF2,y
+            sta PF2
+            nop
+            nop
+            nop
+            nop
+            nop
+            nop
+            nop
+            nop
+            nop
+            nop
+            lda OverRPF2,y
+            sta PF2
+            lda OverRPF1,y
+            sta PF1
+            lda OverRPF0,y
+            sta PF0
+            dex
+            bne .overSc
             sta WSYNC
             lda #0
             sta PF0
             sta PF1
             sta PF2
-            ldx #15
-.g1         sta WSYNC
-            dex
-            bne .g1
-
-            ldy #0
-.overRow    lda OverR0,y
-            sta TempVar
-            ldx #5
-.overSc     sta WSYNC
-            lda TempVar
-            sta PF0
-            lda OverR1,y
-            sta PF1
-            lda OverR2,y
-            sta PF2
-            dex
-            bne .overSc
             iny
             cpy #8
             bne .overRow
 
-            sta WSYNC
-            lda #0
-            sta PF0
-            sta PF1
-            sta PF2
-            ldx #47
+            ; Bottom: 192 - 1 - 46 - 48 - 16 - 48 = 33 lines
+            ldx #33
 .bot        sta WSYNC
             dex
             bne .bot
@@ -2124,6 +2206,10 @@ SafeYTbl    .byte 40,70,105,135,165
 MelodyNotes .byte 8,9,11,12,15,17,20,24
 MelodyVols  .byte 12,11,10,9,8,7,5,3
 
+; Game Over melody — subtle, quiet, somber
+GONotes     .byte 15,17,20,22,25,27,30,31
+GOVols      .byte 6,5,5,4,4,3,3,2
+
 ; Victory jingle - ascending major arpeggio with flourish (12 notes)
 VictoryNotes .byte 20,17,15,12,10,8,6,8,6,4,6,4
 VictoryVols  .byte 8,9,10,11,12,12,13,12,13,14,12,10
@@ -2141,12 +2227,21 @@ PresLPF2    .byte $EE,$22,$22,$EE,$82,$82,$EE,$EE
 PresRPF0    .byte $00,$00,$00,$00,$00,$00,$00,$00
 PresRPF1    .byte $EE,$24,$24,$E4,$84,$84,$E4,$E4
 PresRPF2    .byte $75,$47,$47,$75,$45,$45,$75,$75
-GameR0      .byte $C0,$40,$40,$40,$40,$40,$C0,$C0
-GameR1      .byte $92,$2B,$2B,$BA,$AA,$AA,$AA,$AA
-GameR2      .byte $1D,$05,$05,$1D,$05,$05,$1D,$1D
-OverR0      .byte $C0,$40,$40,$40,$40,$40,$C0,$C0
-OverR1      .byte $AB,$AA,$AA,$AB,$AA,$92,$93,$93
-OverR2      .byte $1D,$14,$14,$1D,$0C,$14,$15,$15
+; GAME - asymmetric playfield
+GameLPF0    .byte $00,$00,$00,$00,$00,$00,$00,$00
+GameLPF1    .byte $00,$00,$00,$00,$00,$00,$00,$00
+GameLPF2    .byte $4E,$A2,$A2,$EA,$AA,$AA,$AE,$AE
+GameRPF0    .byte $00,$00,$00,$00,$00,$00,$00,$00
+GameRPF1    .byte $00,$00,$00,$00,$00,$00,$00,$00
+GameRPF2    .byte $57,$74,$74,$57,$54,$54,$57,$57
+
+; OVER - asymmetric playfield
+OverLPF0    .byte $00,$00,$00,$00,$00,$00,$00,$00
+OverLPF1    .byte $00,$00,$00,$00,$00,$00,$00,$00
+OverLPF2    .byte $AE,$AA,$AA,$AA,$AA,$4A,$4E,$4E
+OverRPF0    .byte $00,$00,$00,$00,$00,$00,$00,$00
+OverRPF1    .byte $00,$00,$00,$00,$00,$00,$00,$00
+OverRPF2    .byte $77,$45,$45,$77,$46,$45,$75,$75
 
 ; CYLOID - asymmetric playfield (mid-scanline PF update trick)
 CycLPF0     .byte $00,$00,$00,$00,$00,$00,$00,$00

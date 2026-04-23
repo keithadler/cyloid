@@ -1,5 +1,33 @@
 # Changelog - Cyloid
 
+## v0.10 - April 23, 2026
+
+### Gameplay Flow
+- Score shown BEFORE game over: Death → Final Score → GAME OVER → Title
+- Different music for each: sad descending melody on score screen, subtle somber melody on game over
+- 3 lives per game
+
+### Visual
+- Lives shown as cyan PF1 pips in top border (no P1 interference)
+- "GAME OVER" uses asymmetric PF hack — no mirroring, centered "GAME" and "OVER"
+- Ship lives display on score screen removed (cleaner)
+- Tank flyby on CYLOID title disappears off right edge properly
+
+### Bug Fixes (10+)
+- **Multiple bullets fix** — HMOVE during lives reposition was double-applying fine motion to P0/M0. Eliminated by switching to PF-based lives display
+- **Black screen fix** — `sta VBLANK` was writing $9E (cyan color in A) instead of 0. Added explicit `lda #0`
+- **CXP0FB double-read** — collision register read once, test both bits from same value
+- **Boss ball direction** — was moving away from player, fixed comparison logic
+- **Ball sprite persists** — ENABL not cleared when boss destroyed
+- **Boss visibility** — timer reduced from ~16s to ~8s, P1 share increased to every 2nd frame
+- **Game over music** — reduced from harsh saw (vol 14) to warm lead (vol 6), much subtler
+- **Level transition** — tank reset to safe spawn, collision latches cleared, missile/flash reset
+
+### Technical
+- Asymmetric PF data for GAME and OVER (96 bytes, 6 tables each)
+- Game over melody uses separate GONotes/GOVols tables
+- 323 bytes ROM free (tight!)
+
 ## v0.9 - April 23, 2026
 
 ### New Feature: Boss Flyby
