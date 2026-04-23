@@ -1,5 +1,17 @@
 # Changelog - Cyloid
 
+## v0.8 - April 23, 2026
+
+### Critical Fix: Frame Stability
+- **Root cause found**: page-crossing penalties on indexed loads (`ObsPF1,y`, `TankGfxBuf,y`) in the kernel pushed worst-case line 1 from 75 to 78 cycles, exceeding the 76-cycle scanline budget. This caused WSYNC slips when the tank was at certain Y positions.
+- Sprite positioning moved into VBLANK period (was consuming 4 visible scanlines after VBLANK off)
+- Obstacle check uses `cmp` instead of `sec/sbc` (saves 2 cycles)
+- Removed dying target explosion graphics from kernel (saves 10+ cycles on line 2)
+- Worst case now: line 1 = 70 cycles, line 2 = 58 cycles (both safe with page crosses)
+- Game logic split across two frames: even frames handle missile/hits, odd frames handle death timers/movement/collision
+- VBLANK timer restored to standard 43, overscan to 30 (3+37+192+30 = 262 exact)
+- Exact 192 visible scanlines: 8 black top + 176 field + 8 black bottom
+
 ## v0.7 - April 23, 2026
 
 ### Title Sequence

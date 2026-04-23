@@ -106,6 +106,7 @@ Reset
 ; MAIN LOOP
 ;===============================================================================
 MainLoop
+            ; === VSYNC: 3 lines ===
             lda #2
             sta VSYNC
             sta WSYNC
@@ -113,9 +114,11 @@ MainLoop
             sta WSYNC
             lda #0
             sta VSYNC
+
+            ; === VBLANK: 37 lines ===
             lda #2
             sta VBLANK
-            lda #44             ; slightly more VBLANK time
+            lda #43             ; 43*64 = 2752 cycles = ~36.2 lines
             sta TIM64T
             inc FrameCount
 
@@ -341,7 +344,7 @@ GenObstacles SUBROUTINE
 ; GAME LOGIC
 ;===============================================================================
 GameLogic SUBROUTINE
-            ; OPT 1: Single joystick read, minimal branching
+            ; === EVERY FRAME: joystick + fire (must be responsive) ===
             lda #0
             sta Moving
             lda SWCHA
@@ -397,16 +400,14 @@ GameLogic SUBROUTINE
             lda #148
             sta TankX
 .noR
-            ; OPT 3: Detect movement from direction bits directly
             lda TempVar
             and #%11110000
-            cmp #%11110000      ; all high = no movement
+            cmp #%11110000
             beq .notMoving
             lda #1
             sta Moving
 .notMoving
 
-            ; OPT 4: Simplified fire - fewer stores
             lda INPT4
             bmi .noF
             lda ButtonPrev
@@ -417,7 +418,7 @@ GameLogic SUBROUTINE
             sta MissileOn
             lda TankX
             clc
-            adc #2              ; center 4-wide missile on 8px tank
+            adc #2
             sta MissileX
             lda TankY
             clc
@@ -438,10 +439,17 @@ GameLogic SUBROUTINE
             lda INPT4
             sta ButtonPrev
 
-            ; Missile movement - OPT 5: use jump table approach
+            ; === FRAME SPLIT: alternate heavy work ===
+            lda FrameCount
+            and #1
+            beq .evenFrame
+            jmp .oddFrame
+
+            ; === EVEN FRAME: missile + hit detection ===
+.evenFrame
             lda MissileOn
             bne .mGo
-            jmp .noMsl
+            jmp .frameDone
 .mGo        ldx MissileDir
             cpx #0
             bne .md1
@@ -480,16 +488,15 @@ GameLogic SUBROUTINE
             bcc .mHit
 .mKill      lda #0
             sta MissileOn
-            jmp .noMsl
+            jmp .frameDone
 
-            ; OPT 6: Hit check - only check if missile active (already gated above)
 .mHit       ldx #0
 .hitLoop    cpx NumTgts
-            bcs .noMsl
-            lda TgtALive,x
+            bcc .hitCheck
+            jmp .frameDone
+.hitCheck   lda TgtALive,x
             cmp #1
             bne .hitNext
-            ; Y distance
             lda MissileY
             sec
             sbc TgtAY,x
@@ -498,7 +505,6 @@ GameLogic SUBROUTINE
             adc #1
 .hy         cmp #12
             bcs .hitNext
-            ; X distance
             lda MissileX
             sec
             sbc TgtAX,x
@@ -522,13 +528,15 @@ GameLogic SUBROUTINE
             sta AUDF0
             lda #2
             sta SndType
-            jmp .noMsl
+            jmp .frameDone
 .hitNext    inx
             cpx NumTgts
             bcc .hitLoop
-.noMsl
+            jmp .frameDone
 
-            ; OPT 7: Combined death timer + alive check + level check
+            ; === ODD FRAME: death timers + move + flicker + collision ===
+.oddFrame
+            ; Death timers + alive check
             ldx #0
             ldy #0
 .deathLoop  cpx NumTgts
@@ -556,23 +564,22 @@ GameLogic SUBROUTINE
             sta GameMode
             lda #120
             sta StateTimer
-            ; Silence all sounds before score screen
             lda #0
             sta SndVol
             sta SndType
             sta AUDV0
             sta AUDV1
-            jmp .afterMove
+            jmp .frameDone
 .noLvlAdv
 
-            ; OPT 8: Move targets only every 4th frame (all levels)
+            ; Move targets every 4th frame
             lda FrameCount
-            and #3
-            bne .afterMove
+            and #7              ; every 8th frame now (was 4th)
+            bne .skipMv
             jsr MoveTargets
-.afterMove
+.skipMv
 
-            ; OPT 9: Inline flicker select (save JSR/RTS = 12 cycles)
+            ; Flicker select (inline)
             ldx FlickerIdx
             inx
             cpx NumTgts
@@ -631,6 +638,8 @@ GameLogic SUBROUTINE
             sta AUDF1
 .skipC      sta CXCLR
 
+            ; === EVERY FRAME (after split): flash + gfx + sound ===
+.frameDone
             lda HitFlash
             beq .noFl
             dec HitFlash
@@ -676,7 +685,7 @@ GameLogic SUBROUTINE
             bpl .expLp
 .gfxDone
 
-            ; OPT 10: Minimal sound - just decay, skip movement sound writes when not moving
+            ; Sound decay
             lda SndType
             beq .nsd
             lda FrameCount
@@ -694,7 +703,7 @@ GameLogic SUBROUTINE
             sta AUDV0
             sta SndType
 .nsd
-            ; Movement sound - only write registers when state changes
+            ; Movement sound
             lda HitFlash
             bne .moveDone
             lda Moving
@@ -706,7 +715,7 @@ GameLogic SUBROUTINE
             lda #30
             sta AUDF1
             jmp .moveDone
-.silence    sta AUDV1           ; A=0 from beq
+.silence    sta AUDV1
 .moveDone
 
             lda Score
@@ -946,9 +955,8 @@ OverLogic SUBROUTINE
 WaitDraw SUBROUTINE
             lda INTIM
             bne WaitDraw
-            sta WSYNC
-            lda #0
-            sta VBLANK
+            ; Don't turn off VBLANK here - let each renderer do it
+            ; after positioning sprites (keeps positioning invisible)
             lda GameMode
             cmp #MODE_PLAY
             beq .g
@@ -958,11 +966,25 @@ WaitDraw SUBROUTINE
             beq .lv
             cmp #MODE_SCORE
             beq .sc
+            ; Non-game screens: turn off VBLANK now
+            sta WSYNC
+            lda #0
+            sta VBLANK
             jmp DrawTitle
 .g          jmp DrawGame
-.o          jmp DrawOver
-.lv         jmp DrawDigitScreen
-.sc         jmp DrawDigitScreen
+.o          ; Turn off VBLANK for non-positioning screens
+            sta WSYNC
+            lda #0
+            sta VBLANK
+            jmp DrawOver
+.lv         sta WSYNC
+            lda #0
+            sta VBLANK
+            jmp DrawDigitScreen
+.sc         sta WSYNC
+            lda #0
+            sta VBLANK
+            jmp DrawDigitScreen
 
 DrawTitle SUBROUTINE
             ldx SubState
@@ -984,6 +1006,7 @@ DrawTitle SUBROUTINE
 ; GAME KERNEL
 ;===============================================================================
 DrawGame SUBROUTINE
+            ; Position sprites DURING VBLANK (before visible area)
             lda TankX
             sec
             sta WSYNC
@@ -1022,6 +1045,11 @@ DrawGame SUBROUTINE
             sta RESM0
             sta WSYNC
             sta HMOVE
+
+            ; NOW turn off VBLANK - visible area starts
+            sta WSYNC
+            lda #0
+            sta VBLANK
 
             ; Colors
             lda HitFlash
@@ -1087,109 +1115,111 @@ DrawGame SUBROUTINE
             sta PF2
 .topBorder  sta WSYNC
             inx
-            cpx #7
+            cpx #8
             bne .topBorder
 
-            ; Set field colors, then WSYNC to apply cleanly
+            ; Field area: 176 lines
             lda FieldColor
             sta COLUBK
             lda WallColor
             ora #$08
             sta COLUPF
-            sta WSYNC           ; this line shows field color
-            inx                 ; X=8
 
             lda TankY
             clc
             adc #TANK_H
             sta TempVar
 
-            ; 2-line kernel
+            ; 2-line kernel — cycle-tight
 .fLoop
-            txa
-            and #$1F
-            sec
-            sbc #$18
-            bcc .obsOff
-            txa
-            lsr
-            lsr
-            lsr
-            lsr
-            lsr
-            and #3
-            tay
-            lda ObsPF1,y
-            sta PF1
-            lda ObsPF2,y
-            sta PF2
-            jmp .obsDone
-            ; Opt 3: obsOff falls through to obsDone
-.obsOff     lda #0
-            sta PF1
-            sta PF2
-.obsDone
-            cpx TankY
-            bcc .noTank
-            cpx TempVar
-            bcs .noTank
-            txa
-            sec
-            sbc TankY
-            tay
-            lda TankGfxBuf,y
-            sta GRP0
-            inx
-            sta WSYNC
-            jmp .line2
-.noTank     lda #0
-            sta GRP0
-            inx
-            sta WSYNC
+            ; LINE 1: obstacles + tank
+            ; Obstacle check: if (X & $1F) >= $18, show obstacle
+            txa                 ; 2
+            and #$1F            ; 2
+            cmp #$18            ; 2
+            bcc .obsOff         ; 2/3
+
+            ; Obstacle ON — get band index
+            txa                 ; 2
+            lsr                 ; 2
+            lsr                 ; 2
+            lsr                 ; 2
+            lsr                 ; 2
+            lsr                 ; 2
+            and #3              ; 2
+            tay                 ; 2
+            lda ObsPF1,y        ; 4
+            sta PF1             ; 3
+            lda ObsPF2,y        ; 4
+            sta PF2             ; 3 = 35 cycles
+            jmp .tankChk        ; 3 = 38
+
+.obsOff     lda #0              ; 2
+            sta PF1             ; 3
+            sta PF2             ; 3 = 12 cycles (fast path)
+
+.tankChk
+            ; Tank sprite — simplified: just index and store
+            cpx TankY           ; 3
+            bcc .noTank         ; 2/3
+            cpx TempVar         ; 3
+            bcs .noTank         ; 2/3
+            txa                 ; 2
+            sec                 ; 2
+            sbc TankY           ; 3
+            tay                 ; 2
+            lda TankGfxBuf,y    ; 4
+            sta GRP0            ; 3 = 24 cycles
+            inx                 ; 2
+            sta WSYNC           ; 3
+            jmp .line2          ; 3
+
+.noTank     lda #0              ; 2
+            sta GRP0            ; 3
+            inx                 ; 2
+            sta WSYNC           ; 3
+
+            ; LINE 2: target + missile
 .line2
-            lda TgtLive
-            beq .noTgt
-            txa
-            sec
-            sbc TgtY
-            cmp #6
-            bcs .noTgt
-            tay
-            ; Dying targets use explosion graphics
-            lda TgtLive
-            cmp #2
-            bcs .tgtExplode
-            lda TargetGfx,y
-            jmp .storeTgt
-.tgtExplode
-            ; Random explosion pattern
-            tya
-            eor FrameCount
-            eor TgtLive
-.storeTgt   sta GRP1
-            jmp .tgtDone
-.noTgt      lda #0
-            sta GRP1
+            ; Target — simplified
+            lda TgtLive         ; 3
+            beq .noTgt          ; 2/3
+            txa                 ; 2
+            sec                 ; 2
+            sbc TgtY            ; 3
+            cmp #6              ; 2
+            bcs .noTgt          ; 2/3
+            tay                 ; 2
+            lda TargetGfx,y     ; 4
+            sta GRP1            ; 3 = 25
+            jmp .tgtDone        ; 3
+
+.noTgt      lda #0              ; 2
+            sta GRP1            ; 3
+
 .tgtDone
-            lda MissileOn
-            beq .noMsl
-            txa
-            sec
-            sbc MissileY
-            bcc .noMsl
-            cmp #4
-            bcs .noMsl
-            lda #2
-            sta ENAM0
-            jmp .mslDone
-.noMsl      lda #0
-            sta ENAM0
+            ; Missile
+            lda MissileOn       ; 3
+            beq .noMsl          ; 2/3
+            txa                 ; 2
+            sec                 ; 2
+            sbc MissileY        ; 3
+            bcc .noMsl          ; 2/3
+            cmp #4              ; 2
+            bcs .noMsl          ; 2/3
+            lda #2              ; 2
+            sta ENAM0           ; 3
+            jmp .mslDone        ; 3
+
+.noMsl      lda #0              ; 2
+            sta ENAM0           ; 3
+
 .mslDone
-            inx
-            cpx #184
-            beq .fEnd
-            sta WSYNC
-            jmp .fLoop
+            inx                 ; 2
+            cpx #184            ; 2
+            beq .fEnd           ; 2/3
+            sta WSYNC           ; 3
+            jmp .fLoop          ; 3
 .fEnd
             ; Bottom border: 8 black lines (replaces wall + blank)
             lda #0
@@ -1430,13 +1460,14 @@ DrawOver SUBROUTINE
 ; OVERSCAN
 ;===============================================================================
 DoOverscan
+            ; === OVERSCAN: 30 lines ===
             lda #2
-            sta VBLANK
+            sta VBLANK          ; turn on VBLANK
             lda #0
             sta GRP0
             sta GRP1
             sta ENAM0
-            sta ENABL           ; Bug 7: clear ball object
+            sta ENABL
             sta PF0
             sta PF1
             sta PF2
