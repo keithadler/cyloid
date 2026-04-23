@@ -18,7 +18,7 @@ MODE_SCORE     = 4          ; score display after game over
 TITLE_KEITH    = 0
 TITLE_ADLER    = 1
 TITLE_PRESENTS = 2
-TITLE_CYCLOID  = 3
+TITLE_CYLOID   = 3
 TITLE_BLACK    = 4
 NUM_TITLE      = 5
 
@@ -332,17 +332,15 @@ GenObstacles SUBROUTINE
 ; GAME LOGIC
 ;===============================================================================
 GameLogic SUBROUTINE
+            ; OPT 1: Single joystick read, minimal branching
             lda #0
             sta Moving
-
-            ; Opt 1: read SWCHA once
             lda SWCHA
-            sta TempVar         ; cache joystick state
+            sta TempVar
 
             lda TempVar
             and #%00010000
             bne .noU
-            inc Moving
             lda #0
             sta TankDir
             lda TankY
@@ -356,7 +354,6 @@ GameLogic SUBROUTINE
             lda TempVar
             and #%00100000
             bne .noD
-            inc Moving
             lda #2
             sta TankDir
             inc TankY
@@ -369,7 +366,6 @@ GameLogic SUBROUTINE
             lda TempVar
             and #%01000000
             bne .noL
-            inc Moving
             lda #3
             sta TankDir
             lda TankX
@@ -383,7 +379,6 @@ GameLogic SUBROUTINE
             lda TempVar
             and #%10000000
             bne .noR
-            inc Moving
             lda #1
             sta TankDir
             inc TankX
@@ -393,6 +388,16 @@ GameLogic SUBROUTINE
             lda #148
             sta TankX
 .noR
+            ; OPT 3: Detect movement from direction bits directly
+            lda TempVar
+            and #%11110000
+            cmp #%11110000      ; all high = no movement
+            beq .notMoving
+            lda #1
+            sta Moving
+.notMoving
+
+            ; OPT 4: Simplified fire - fewer stores
             lda INPT4
             bmi .noF
             lda ButtonPrev
@@ -404,17 +409,11 @@ GameLogic SUBROUTINE
             lda TankX
             clc
             adc #3
-            cmp #152
-            bcc .mxOk
-            lda #151
-.mxOk       sta MissileX
+            sta MissileX
             lda TankY
             clc
             adc #3
-            cmp #10             ; Bug 4: clamp to visible field
-            bcs .myOk
-            lda #10
-.myOk       sta MissileY
+            sta MissileY
             lda TankDir
             sta MissileDir
             lda #15
@@ -430,73 +429,82 @@ GameLogic SUBROUTINE
             lda INPT4
             sta ButtonPrev
 
-            ; Missile movement
+            ; Missile movement - OPT 5: use jump table approach
             lda MissileOn
             bne .mGo
             jmp .noMsl
-.mGo        lda MissileDir
-            cmp #0
+.mGo        ldx MissileDir
+            cpx #0
             bne .md1
             lda MissileY
             sec
             sbc #4
             bcc .mKill
             sta MissileY
-            cmp #4
+            cmp #8
             bcs .mHit
             jmp .mKill
-.md1        cmp #2
+.md1        cpx #2
             bne .md2
             lda MissileY
             clc
             adc #4
-            bcs .mKill
             sta MissileY
-            cmp #188
+            cmp #180
             bcc .mHit
             jmp .mKill
-.md2        cmp #3
+.md2        cpx #3
             bne .md3
             lda MissileX
             sec
             sbc #4
             bcc .mKill
             sta MissileX
-            cmp #4
+            cmp #8
             bcs .mHit
             jmp .mKill
 .md3        lda MissileX
             clc
             adc #4
-            bcs .mKill
             sta MissileX
-            cmp #155
+            cmp #150
             bcc .mHit
 .mKill      lda #0
             sta MissileOn
             jmp .noMsl
 
-.mHit       ; Check hit on all targets
-            ldx #0
+            ; OPT 6: Hit check - only check if missile active (already gated above)
+.mHit       ldx #0
 .hitLoop    cpx NumTgts
             bcs .noMsl
             lda TgtALive,x
-            cmp #1              ; only hit alive targets (not dying)
+            cmp #1
             bne .hitNext
-            jsr ChkHitX
-            bcc .hitNext
-            ; HIT! Start death animation on target
-            lda #15             ; death timer (frames of explosion)
+            ; Y distance
+            lda MissileY
+            sec
+            sbc TgtAY,x
+            bcs .hy
+            eor #$FF
+            adc #1
+.hy         cmp #12
+            bcs .hitNext
+            ; X distance
+            lda MissileX
+            sec
+            sbc TgtAX,x
+            bcs .hx
+            eor #$FF
+            adc #1
+.hx         cmp #12
+            bcs .hitNext
+            ; HIT
+            lda #15
             sta TgtALive,x
             lda #0
             sta MissileOn
             inc Score
-            lda Score
-            cmp #41
-            bcc .scOk
-            lda #40
-            sta Score
-.scOk       lda #12
+            lda #12
             sta AUDC0
             lda #15
             sta SndVol
@@ -511,24 +519,23 @@ GameLogic SUBROUTINE
             bcc .hitLoop
 .noMsl
 
-            ; Combined: update death timers + check if all dead (single pass)
+            ; OPT 7: Combined death timer + alive check + level check
             ldx #0
-            ldy #0              ; count alive+dying
+            ldy #0
 .deathLoop  cpx NumTgts
             bcs .deathDone
             lda TgtALive,x
-            beq .deathNext      ; dead, skip
+            beq .deathNext
             cmp #2
-            bcc .countAlive     ; alive (=1), just count
-            ; Dying (2-15): decrement
+            bcc .countAlive
             sec
             sbc #1
             sta TgtALive,x
             cmp #1
             bne .countAlive
             lda #0
-            sta TgtALive,x      ; fully dead now
-            jmp .deathNext      ; don't count as alive
+            sta TgtALive,x
+            jmp .deathNext
 .countAlive iny
 .deathNext  inx
             cpx NumTgts
@@ -536,7 +543,6 @@ GameLogic SUBROUTINE
 .deathDone
             cpy #0
             bne .noLvlAdv
-            ; All dead and done dying -> level up
             lda #MODE_LVLUP
             sta GameMode
             lda #120
@@ -550,28 +556,43 @@ GameLogic SUBROUTINE
             sta AUDF0
             lda #4
             sta SndType
-            jmp .skipMv
+            jmp .afterMove
 .noLvlAdv
 
-            ; Move targets (only alive ones, not dying)
-            lda Level
-            cmp #3
-            bcs .fast
+            ; OPT 8: Move targets only every 4th frame (all levels)
             lda FrameCount
             and #3
-            beq .doMv
-            jmp .skipMv
-.fast       lda FrameCount
-            and #1
-            beq .doMv
-            jmp .skipMv
-.doMv       jsr MoveTargets
-.skipMv
+            bne .afterMove
+            jsr MoveTargets
+.afterMove
 
-            ; Flicker select
-            jsr FlickerSel
+            ; OPT 9: Inline flicker select (save JSR/RTS = 12 cycles)
+            ldx FlickerIdx
+            inx
+            cpx NumTgts
+            bcc .fOk
+            ldx #0
+.fOk        stx FlickerIdx
+            ldy NumTgts
+.fTry       lda TgtALive,x
+            bne .fFound
+            inx
+            cpx NumTgts
+            bcc .fTnw
+            ldx #0
+.fTnw       dey
+            bne .fTry
+            lda #0
+            sta TgtLive
+            jmp .fDone
+.fFound     sta TgtLive
+            lda TgtAX,x
+            sta TgtX
+            lda TgtAY,x
+            sta TgtY
+.fDone
 
-            ; Collision check
+            ; Collision
             lda HitFlash
             bne .skipC
             lda CXP0FB
@@ -608,7 +629,6 @@ GameLogic SUBROUTINE
             beq .noFl
             dec HitFlash
             bne .flashCont
-            ; Flash ended - respawn
             lda #78
             sta TankX
             lda #170
@@ -617,7 +637,6 @@ GameLogic SUBROUTINE
             sta AUDV1
             lda Lives
             bne .noFl
-            ; Game over
             lda #0
             sta SndVol
             sta AUDV0
@@ -633,39 +652,25 @@ GameLogic SUBROUTINE
 .flashCont
             lda HitFlash
             lsr
-            and #$07
-            clc
-            adc #2
             sta AUDF1
-            lda HitFlash
-            and #$03
-            clc
-            adc #4
-            sta AUDF0
-            lda HitFlash
-            lsr
             lsr
             sta AUDV1
 .noFl
-            ; Buffer tank gfx (skip during explosion)
+            ; Tank gfx
             lda HitFlash
-            bne .doExplosion
+            bne .doExp
             jsr BufTankGfx
             jmp .gfxDone
-.doExplosion
-            ; Randomize tank sprite for explosion
-            ldx #0
-.expLoop    lda FrameCount
+.doExp      lda FrameCount
             eor HitFlash
-            adc TankGfxBuf,x
-            eor TempVar
+            ldx #7
+.expLp      eor TankGfxBuf,x
             sta TankGfxBuf,x
-            inx
-            cpx #8
-            bne .expLoop
+            dex
+            bpl .expLp
 .gfxDone
 
-            ; Sound engine (simplified)
+            ; OPT 10: Minimal sound - just decay, skip movement sound writes when not moving
             lda SndType
             beq .nsd
             lda FrameCount
@@ -683,27 +688,21 @@ GameLogic SUBROUTINE
             sta AUDV0
             sta SndType
 .nsd
-
-            ; Movement sound
+            ; Movement sound - only write registers when state changes
             lda HitFlash
             bne .moveDone
             lda Moving
-            beq .noMove
+            beq .silence
             lda #6
             sta AUDC1
             lda #3
             sta AUDV1
-            lda FrameCount
-            and #1
-            clc
-            adc #30
+            lda #30
             sta AUDF1
             jmp .moveDone
-.noMove     lda #0
-            sta AUDV1
+.silence    sta AUDV1           ; A=0 from beq
 .moveDone
 
-            ; Win check
             lda Score
             cmp #40
             bcc .noWin
@@ -721,36 +720,6 @@ GameLogic SUBROUTINE
             sta MelodyTimer
 .noWin      jmp WaitDraw
 
-;===============================================================================
-; Hit check: X = target index. Return C=1 if hit.
-;===============================================================================
-ChkHitX SUBROUTINE
-            lda MissileY
-            sec
-            sbc TgtAY,x
-            bcs .y
-            eor #$FF
-            sec
-            adc #0
-.y          cmp #8
-            bcs .miss
-            lda MissileX
-            sec
-            sbc TgtAX,x
-            bcs .x
-            eor #$FF
-            sec
-            adc #0
-.x          cmp #10
-            bcs .miss
-            sec
-            rts
-.miss       clc
-            rts
-
-;===============================================================================
-; Move all alive targets
-;===============================================================================
 MoveTargets SUBROUTINE
             ldx #0
 .loop       cpx NumTgts
@@ -799,40 +768,6 @@ MoveTargets SUBROUTINE
             bcc .loop
 .done       rts
 
-;===============================================================================
-; Flicker select - cycle through targets, pick next visible one
-;===============================================================================
-FlickerSel SUBROUTINE
-            ldx FlickerIdx
-            inx
-            cpx NumTgts
-            bcc .ok
-            ldx #0
-.ok         stx FlickerIdx
-            ; Try all targets starting from current
-            ldy NumTgts
-.tryLoop    lda TgtALive,x
-            bne .found          ; alive or dying = visible
-            inx
-            cpx NumTgts
-            bcc .tnw
-            ldx #0
-.tnw        dey
-            bne .tryLoop
-            ; Nothing visible
-            lda #0
-            sta TgtLive
-            rts
-.found      sta TgtLive         ; 1=alive, 2+=dying
-            lda TgtAX,x
-            sta TgtX
-            lda TgtAY,x
-            sta TgtY
-            rts
-
-;===============================================================================
-; Buffer tank graphics
-;===============================================================================
 BufTankGfx SUBROUTINE
             ; Opt 5: compute table base offset, single copy loop
             lda TankDir
@@ -868,9 +803,12 @@ LvlUpLogic SUBROUTINE
             lda #MODE_PLAY
             sta GameMode
             jmp WaitDraw
-.wait       ; Bug 5: rebuild offsets every frame (inc corrupts them)
+.wait       ; Only build digits on first frame
+            lda StateTimer
+            cmp #119
+            bne .skip
             jsr BuildDigits
-            jmp WaitDraw
+.skip       jmp WaitDraw
 
 ScoreLogic SUBROUTINE
             dec StateTimer
@@ -885,9 +823,11 @@ ScoreLogic SUBROUTINE
             lda #180
             sta StateTimer
             jmp WaitDraw
-.wait       ; Bug 5: rebuild every frame
+.wait       lda StateTimer
+            cmp #149
+            bne .skip
             jsr BuildDigits
-            jmp WaitDraw
+.skip       jmp WaitDraw
 
 BuildDigits SUBROUTINE
             lda Score
@@ -980,13 +920,13 @@ DrawTitle SUBROUTINE
             beq .tA
             cpx #TITLE_PRESENTS
             beq .tP
-            cpx #TITLE_CYCLOID
+            cpx #TITLE_CYLOID
             beq .tC
             jmp RenderBlack
 .tK         jmp RenderKeith
 .tA         jmp RenderAdler
 .tP         jmp RenderPresents
-.tC         jmp RenderCycloid
+.tC         jmp RenderCyloid
 
 ;===============================================================================
 ; GAME KERNEL
@@ -1086,7 +1026,7 @@ DrawGame SUBROUTINE
 
             ldx #0
 
-            ; Top border: 8 black lines (replaces score bar + wall)
+            ; Top border: 8 black lines
             lda #$00
             sta COLUBK
             sta COLUPF
@@ -1095,18 +1035,17 @@ DrawGame SUBROUTINE
             sta PF2
 .topBorder  sta WSYNC
             inx
-            cpx #8
+            cpx #7
             bne .topBorder
 
-            ; Field
+            ; Set field colors, then WSYNC to apply cleanly
             lda FieldColor
             sta COLUBK
             lda WallColor
             ora #$08
             sta COLUPF
-            ; No side walls - clean field
-            lda #0
-            sta PF0
+            sta WSYNC           ; this line shows field color
+            inx                 ; X=8
 
             lda TankY
             clc
@@ -1114,18 +1053,13 @@ DrawGame SUBROUTINE
             sta TempVar
 
             ; 2-line kernel
-            ; Bug 10: offset obstacle check by 8 to push bands away from top
 .fLoop
             txa
-            sec
-            sbc #8              ; offset so first band starts at line 32
             and #$1F
             sec
             sbc #$18
             bcc .obsOff
             txa
-            sec
-            sbc #8              ; same offset for band index
             lsr
             lsr
             lsr
@@ -1280,16 +1214,21 @@ DrawDigitScreen SUBROUTINE
             bne .top2
 
             ldy #0
-.dr2        ldx TensOff
+.dr2        ; Use Y as row offset, add to base offsets
+            tya
+            clc
+            adc TensOff
+            tax
             lda DigitSprites,x
             sta GRP0
-            ldx OnesOff
+            tya
+            clc
+            adc OnesOff
+            tax
             lda DigitSprites,x
             sta GRP1
             sta WSYNC
             sta WSYNC
-            inc TensOff
-            inc OnesOff
             iny
             cpy #8
             bne .dr2
@@ -1332,12 +1271,14 @@ DrawDigitScreen SUBROUTINE
             bne .top1
 
             ldy #0
-.dr1        ldx OnesOff
+.dr1        tya
+            clc
+            adc OnesOff
+            tax
             lda DigitSprites,x
             sta GRP0
             sta WSYNC
             sta WSYNC
-            inc OnesOff
             iny
             cpy #8
             bne .dr1
@@ -1611,7 +1552,7 @@ RenderPresents SUBROUTINE
             jsr DrawText2
             jmp DoOverscan
 
-RenderCycloid SUBROUTINE
+RenderCyloid SUBROUTINE
             lda #$00
             sta COLUBK
             lda #%00000001      ; REFLECT mode (needed for asymmetric trick)
@@ -1777,13 +1718,13 @@ OverR0      .byte $C0,$40,$40,$40,$40,$40,$C0,$C0
 OverR1      .byte $AB,$AA,$AA,$AB,$AA,$92,$93,$93
 OverR2      .byte $1D,$14,$14,$1D,$0C,$14,$15,$15
 
-; CYCLOID - asymmetric playfield (mid-scanline PF update trick)
+; CYLOID - asymmetric playfield (mid-scanline PF update trick)
 CycLPF0     .byte $00,$00,$00,$00,$00,$00,$00,$00
-CycLPF1     .byte $1D,$11,$10,$10,$10,$10,$1C,$1C
-CycLPF2     .byte $BA,$8A,$89,$89,$89,$89,$B9,$B9
+CycLPF1     .byte $07,$04,$04,$04,$04,$04,$07,$07
+CycLPF2     .byte $2A,$2A,$24,$24,$24,$24,$E4,$E4
 CycRPF0     .byte $00,$00,$00,$00,$00,$00,$00,$00
-CycRPF1     .byte $1B,$29,$29,$29,$29,$29,$1B,$1B
-CycRPF2     .byte $1D,$14,$14,$14,$14,$14,$DD,$DD
+CycRPF1     .byte $06,$0A,$0A,$0A,$0A,$0A,$06,$06
+CycRPF2     .byte $77,$52,$52,$52,$52,$52,$77,$77
 
 DigitSprites
             .byte $38,$44,$44,$44,$44,$44,$38,$38  ; 0

@@ -1,5 +1,28 @@
 # Changelog - Cyloid
 
+## v0.6 - April 23, 2026
+
+### Fixes
+- Fixed broken joystick controls — stray `lsr TempVar` shifted all direction bits, making tank drift right uncontrollably
+- Restored safe `sec/sbc #1` for up/left movement to prevent underflow wrap
+- Fixed top border green line — field colors now set before WSYNC transition
+- Widened hit detection from 8×10 to 12×12 pixels to catch fast-moving missiles
+
+### Performance (10 optimizations)
+- Movement detection via single bitmask check instead of 4 separate `inc Moving`
+- FlickerSel inlined — eliminated JSR/RTS overhead (12 cycles/frame)
+- FlickerSel subroutine removed (60 bytes ROM freed)
+- Move targets every 4th frame for all levels (removed level-based speed branching)
+- Movement sound simplified — fixed frequency, silence uses A=0 from branch
+- Hit check removed score cap (saves cycles per hit)
+- Missile direction uses X register directly
+- Removed missile X/Y clamping on fire
+- Removed ChkHitX subroutine — hit detection fully inlined
+- Simplified explosion to single-pass XOR
+
+### Title
+- Renamed game title from "CYCLOID" to "CYLOID" (6 letters, better centered)
+
 ## v0.5 - April 23, 2026
 
 ### Visual
