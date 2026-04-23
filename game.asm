@@ -18,8 +18,9 @@ MODE_SCORE     = 4          ; score display after game over
 TITLE_KEITH    = 0
 TITLE_ADLER    = 1
 TITLE_PRESENTS = 2
-TITLE_BLACK    = 3
-NUM_TITLE      = 4
+TITLE_CYCLOID  = 3
+TITLE_BLACK    = 4
+NUM_TITLE      = 5
 
 TANK_H         = 8
 MAX_TGTS       = 5          ; max enemies per level
@@ -152,7 +153,7 @@ TitleLogic SUBROUTINE
             sta StateTimer
 .done       jmp WaitDraw
 
-TitleTimers .byte 180,150,150,90
+TitleTimers .byte 180,150,150,180,90
 
 ;===============================================================================
 ; INIT
@@ -341,7 +342,11 @@ GameLogic SUBROUTINE
             lda #0
             sta Moving
 
+            ; Opt 1: read SWCHA once
             lda SWCHA
+            sta TempVar         ; cache joystick state
+
+            lda TempVar
             and #%00010000
             bne .noU
             inc Moving
@@ -355,7 +360,7 @@ GameLogic SUBROUTINE
             lda #12
 .upOk       sta TankY
 .noU
-            lda SWCHA
+            lda TempVar
             and #%00100000
             bne .noD
             inc Moving
@@ -368,7 +373,7 @@ GameLogic SUBROUTINE
             lda #175
             sta TankY
 .noD
-            lda SWCHA
+            lda TempVar
             and #%01000000
             bne .noL
             inc Moving
@@ -382,7 +387,7 @@ GameLogic SUBROUTINE
             lda #8
 .leftOk     sta TankX
 .noL
-            lda SWCHA
+            lda TempVar
             and #%10000000
             bne .noR
             inc Moving
@@ -506,7 +511,8 @@ GameLogic SUBROUTINE
             sta SndType
             jmp .noMsl
 .hitNext    inx
-            jmp .hitLoop
+            cpx NumTgts
+            bcc .hitLoop
 .noMsl
 
             ; Update target death timers
@@ -525,7 +531,8 @@ GameLogic SUBROUTINE
             lda #0
             sta TgtALive,x
 .deathNext  inx
-            jmp .deathLoop
+            cpx NumTgts         ; Opt 6
+            bcc .deathLoop
 .deathDone
 
             ; Check if all targets dead (alive=0, not dying)
@@ -537,7 +544,8 @@ GameLogic SUBROUTINE
             beq .chkNext
             iny                 ; still alive or dying
 .chkNext    inx
-            jmp .chkAll
+            cpx NumTgts         ; Opt 6
+            bcc .chkAll
 .chkDone    cpy #0
             bne .noLvlAdv
             ; All dead and done dying -> level up
@@ -840,7 +848,8 @@ MoveTargets SUBROUTINE
             lda #1
             sta TgtADirY,x
 .next       inx
-            jmp .loop
+            cpx NumTgts         ; Opt 6: use bcc instead of jmp
+            bcc .loop
 .done       rts
 
 ;===============================================================================
@@ -878,37 +887,19 @@ FlickerSel SUBROUTINE
 ; Buffer tank graphics
 ;===============================================================================
 BufTankGfx SUBROUTINE
-            ldx #0
+            ; Opt 5: compute table base offset, single copy loop
             lda TankDir
-            cmp #0
-            beq .up
-            cmp #1
-            beq .rt
-            cmp #2
-            beq .dn
-.lf         lda TankLeftGfx,x
+            asl
+            asl
+            asl                 ; dir * 8
+            tay                 ; Y = offset into sprite tables
+            ldx #0
+.copy       lda TankUpGfx,y     ; all 4 tables are contiguous
             sta TankGfxBuf,x
+            iny
             inx
             cpx #TANK_H
-            bne .lf
-            rts
-.up         lda TankUpGfx,x
-            sta TankGfxBuf,x
-            inx
-            cpx #TANK_H
-            bne .up
-            rts
-.rt         lda TankRightGfx,x
-            sta TankGfxBuf,x
-            inx
-            cpx #TANK_H
-            bne .rt
-            rts
-.dn         lda TankDownGfx,x
-            sta TankGfxBuf,x
-            inx
-            cpx #TANK_H
-            bne .dn
+            bne .copy
             rts
 
 ;===============================================================================
@@ -916,7 +907,7 @@ BufTankGfx SUBROUTINE
 ;===============================================================================
 LvlUpLogic SUBROUTINE
             dec StateTimer
-            bne .build
+            bne .wait
             lda #0
             sta SndVol
             sta AUDV0
@@ -930,14 +921,16 @@ LvlUpLogic SUBROUTINE
             lda #MODE_PLAY
             sta GameMode
             jmp WaitDraw
-.build      ; Build score digits
+.wait       ; Opt 7: only build digits on first frame (timer=119)
+            lda StateTimer
+            cmp #119
+            bne .skip
             jsr BuildDigits
-            jmp WaitDraw
+.skip       jmp WaitDraw
 
 ScoreLogic SUBROUTINE
             dec StateTimer
-            bne .build
-            ; Return to title
+            bne .wait
             lda #0
             sta AUDV0
             sta AUDV1
@@ -948,8 +941,12 @@ ScoreLogic SUBROUTINE
             lda #180
             sta StateTimer
             jmp WaitDraw
-.build      jsr BuildDigits
-            jmp WaitDraw
+.wait       ; Opt 7: only build on first frame (timer=149)
+            lda StateTimer
+            cmp #149
+            bne .skip
+            jsr BuildDigits
+.skip       jmp WaitDraw
 
 BuildDigits SUBROUTINE
             lda Score
@@ -1040,10 +1037,13 @@ DrawTitle SUBROUTINE
             beq .tA
             cpx #TITLE_PRESENTS
             beq .tP
+            cpx #TITLE_CYCLOID
+            beq .tC
             jmp RenderBlack
 .tK         jmp RenderKeith
 .tA         jmp RenderAdler
 .tP         jmp RenderPresents
+.tC         jmp RenderCycloid
 
 ;===============================================================================
 ; GAME KERNEL
@@ -1143,17 +1143,14 @@ DrawGame SUBROUTINE
 
             ldx #0
 
-            ; Score bar: 5 lines
+            ; Score bar: 5 lines (Opt 4: fixed color, no per-line gradient)
             lda #$00
             sta COLUBK
+            lda #$1C            ; gold
+            sta COLUPF
             sta PF1
             sta PF2
 .scr        sta WSYNC
-            txa
-            asl
-            clc
-            adc #$1A
-            sta COLUPF
             txa
             asl
             asl
@@ -1224,10 +1221,10 @@ DrawGame SUBROUTINE
             lda ObsPF2,y
             sta PF2
             jmp .obsDone
+            ; Opt 3: obsOff falls through to obsDone
 .obsOff     lda #0
             sta PF1
             sta PF2
-            jmp .obsDone        ; need explicit jmp for fall-through
 .obsDone
             cpx TankY
             bcc .noTank
@@ -1704,6 +1701,102 @@ RenderPresents SUBROUTINE
             jsr DrawText2
             jmp DoOverscan
 
+RenderCycloid SUBROUTINE
+            lda #$00
+            sta COLUBK
+            lda #%00000001      ; REFLECT mode (needed for asymmetric trick)
+            sta CTRLPF
+            lda #0
+            sta PF0
+            sta PF1
+            sta PF2
+
+            ; Top blank: 68 lines
+            ldy #68
+.top        sta WSYNC
+            dey
+            bne .top
+
+            ; Asymmetric PF kernel: 8 rows x 7 scanlines = 56 lines
+            ldy #0              ; row index
+.row
+            ; Set color per row (cycling)
+            lda FrameCount
+            lsr
+            and #$0E
+            ora #$C2
+            sta COLUPF
+
+            ldx #7              ; 7 scanlines per row
+.scanLine
+            sta WSYNC
+            ; --- LEFT HALF: write PF0/PF1/PF2 early ---
+            lda CycLPF0,y       ; 4
+            sta PF0              ; 3  = 7 (PF0 drawn at cycle ~23, plenty of time)
+            lda CycLPF1,y       ; 4
+            sta PF1              ; 3  = 14
+            lda CycLPF2,y       ; 4
+            sta PF2              ; 3  = 21
+            ; --- WAIT for beam to pass PF0 right half (cycle ~53) ---
+            ; We're at ~21 cycles. Need to reach ~40 before writing right PF2.
+            ; PF2 right starts at cycle ~40 (pixel 148), so write before that.
+            ; Actually in repeat mode, right PF0 starts at cycle 37.
+            ; We need to update PF0 for right half AFTER left PF2 is latched
+            ; but BEFORE right PF0 is drawn.
+            ;
+            ; Timing: left PF2 finishes at cycle ~36. Right PF0 starts at ~37.
+            ; So we need to write right-half PF0 between cycle 36-37... impossible
+            ; in repeat mode. 
+            ;
+            ; In REFLECT mode, right half draws PF2,PF1,PF0 (reversed order).
+            ; So right PF2 starts at ~37, PF1 at ~49, PF0 at ~65.
+            ; We can update PF2 after left PF2 latches (~36), then PF1, then PF0.
+            ;
+            ; USE REFLECT MODE for the asymmetric trick!
+            ; Left: PF0(23) PF1(29) PF2(36)
+            ; Right: PF2(37) PF1(49) PF0(65)
+            ; After writing left PF2 at cycle 21, wait until cycle ~37,
+            ; then write right PF2, then PF1, then PF0.
+            
+            ; We're at cycle ~21. Need to burn ~16 cycles to reach ~37.
+            nop                  ; 2 = 23
+            nop                  ; 2 = 25
+            nop                  ; 2 = 27
+            nop                  ; 2 = 29
+            nop                  ; 2 = 31
+            nop                  ; 2 = 33
+            nop                  ; 2 = 35
+            nop                  ; 2 = 37
+            ; --- RIGHT HALF: update PF2 first (it draws first in reflect) ---
+            lda CycRPF2,y       ; 4 = 41
+            sta PF2              ; 3 = 44
+            lda CycRPF1,y       ; 4 = 48
+            sta PF1              ; 3 = 51
+            lda CycRPF0,y       ; 4 = 55
+            sta PF0              ; 3 = 58 (right PF0 draws at ~65, safe!)
+
+            dex
+            bne .scanLine
+
+            ; Gap line: clear PF
+            sta WSYNC
+            lda #0
+            sta PF0
+            sta PF1
+            sta PF2
+
+            iny
+            cpy #8
+            bne .row
+
+            ; Bottom blank: 68 lines
+            ldy #68
+.bot        sta WSYNC
+            dey
+            bne .bot
+
+            jmp DoOverscan
+
 RenderBlack SUBROUTINE
             lda #0
             sta COLUBK
@@ -1721,15 +1814,16 @@ RenderBlack SUBROUTINE
 ; DATA
 ;===============================================================================
 
+; Sprite tables ordered by TankDir: 0=up, 1=right, 2=down, 3=left
 TankUpGfx
             .byte #%00011000,#%00011000,#%01111110,#%01111110
             .byte #%11111111,#%11111111,#%01100110,#%01100110
-TankDownGfx
-            .byte #%01100110,#%01100110,#%11111111,#%11111111
-            .byte #%01111110,#%01111110,#%00011000,#%00011000
 TankRightGfx
             .byte #%00111100,#%01111110,#%01111111,#%11111111
             .byte #%11111111,#%01111111,#%01111110,#%00111100
+TankDownGfx
+            .byte #%01100110,#%01100110,#%11111111,#%11111111
+            .byte #%01111110,#%01111110,#%00011000,#%00011000
 TankLeftGfx
             .byte #%00111100,#%01111110,#%11111110,#%11111111
             .byte #%11111111,#%11111110,#%01111110,#%00111100
@@ -1764,6 +1858,14 @@ GameR2      .byte $1D,$05,$05,$1D,$05,$05,$1D,$1D
 OverR0      .byte $C0,$40,$40,$40,$40,$40,$C0,$C0
 OverR1      .byte $AB,$AA,$AA,$AB,$AA,$92,$93,$93
 OverR2      .byte $1D,$14,$14,$1D,$0C,$14,$15,$15
+
+; CYCLOID - asymmetric playfield (mid-scanline PF update trick)
+CycLPF0     .byte $00,$00,$00,$00,$00,$00,$00,$00
+CycLPF1     .byte $3A,$22,$21,$21,$21,$21,$39,$39
+CycLPF2     .byte $5D,$45,$44,$44,$44,$44,$DC,$DC
+CycRPF0     .byte $00,$00,$00,$00,$00,$00,$00,$00
+CycRPF1     .byte $0D,$14,$14,$14,$14,$14,$0D,$0D
+CycRPF2     .byte $3B,$29,$29,$29,$29,$29,$BB,$BB
 
 DigitSprites
             .byte $38,$44,$44,$44,$44,$44,$38,$38  ; 0

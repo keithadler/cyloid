@@ -1,5 +1,26 @@
 # Changelog - Cyloid
 
+## v0.3 - April 22, 2026
+
+### Title Sequence
+- New "CYCLOID" title screen using asymmetric playfield hack
+- Mid-scanline PF register updates for 40 unique pixels (no mirroring/repeating)
+- Cycling green/teal color, reflect-mode trick with timed NOP sled
+- Sequence: KEITH → ADLER → PRESENTS → CYCLOID → Black → Game
+
+### Performance (10 optimizations)
+- SWCHA joystick port cached to RAM — eliminates 3 redundant I/O reads per frame
+- Obstacle OFF path falls through to obsDone — saves 3 cycles on ~75% of kernel lines
+- Score bar uses fixed gold color — removes 10-cycle per-line gradient calculation
+- BufTankGfx consolidated from 4 separate loops to 1 computed-offset loop (saves ~40 bytes ROM)
+- Target/death/check loops use `bcc` instead of `jmp` (saves 1 byte + 0-1 cycle each)
+- BuildDigits called once per transition instead of every frame (saves ~7000 cycles per level-up)
+- Sprite tables reordered to match TankDir values for indexed access
+
+### Technical
+- 972 bytes ROM free in 4KB cartridge
+- Asymmetric PF data: 6 tables (left PF0/1/2 + right PF0/1/2) × 8 rows
+
 ## v0.2 - April 22, 2026
 
 ### Gameplay
