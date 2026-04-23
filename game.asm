@@ -1,5 +1,7 @@
 ; =============================================================================
 ; game.asm - Cyloid Tank Game - Atari 2600 (4KB NTSC)
+; Created by Keith Adler, 2026
+; Open source under the MIT License
 ; =============================================================================
 ;
 ; A tank shooter where the player navigates obstacle-filled arenas,

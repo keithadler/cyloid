@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A tank shooter for the Atari 2600, written in 6502 assembly. Open source under the MIT license.
+A tank shooter for the Atari 2600, written in 6502 assembly by **Keith Adler**. Open source under the MIT license.
 
 ## 🎮 Play in Browser
 
@@ -213,6 +213,7 @@ Contributions welcome! Fork the repo, make changes, and submit a pull request. T
 
 ## Acknowledgments
 
+- Created by **Keith Adler**
 - [Javatari.js](https://javatari.org) by Paulo Augusto Peccin — browser-based Atari 2600 emulator that makes it possible to play Cyloid online
 - [Stella](https://stella-emu.github.io) — the reference Atari 2600 emulator used during development
 - [DASM](https://github.com/dasm-assembler/dasm) — the macro assembler for 6502
