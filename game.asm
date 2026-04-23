@@ -115,7 +115,7 @@ MainLoop
             sta VSYNC
             lda #2
             sta VBLANK
-            lda #43
+            lda #44             ; slightly more VBLANK time
             sta TIM64T
             inc FrameCount
 
@@ -515,38 +515,30 @@ GameLogic SUBROUTINE
             bcc .hitLoop
 .noMsl
 
-            ; Update target death timers
+            ; Combined: update death timers + check if all dead (single pass)
             ldx #0
+            ldy #0              ; count alive+dying
 .deathLoop  cpx NumTgts
             bcs .deathDone
             lda TgtALive,x
-            cmp #2              ; dying? (2-15 = death timer)
-            bcc .deathNext
+            beq .deathNext      ; dead, skip
+            cmp #2
+            bcc .countAlive     ; alive (=1), just count
+            ; Dying (2-15): decrement
             sec
-            sbc #1              ; decrement timer
+            sbc #1
             sta TgtALive,x
             cmp #1
-            bne .deathNext
-            ; Timer hit 1 -> fully dead
+            bne .countAlive
             lda #0
-            sta TgtALive,x
+            sta TgtALive,x      ; fully dead now
+            jmp .deathNext      ; don't count as alive
+.countAlive iny
 .deathNext  inx
-            cpx NumTgts         ; Opt 6
+            cpx NumTgts
             bcc .deathLoop
 .deathDone
-
-            ; Check if all targets dead (alive=0, not dying)
-            ldx #0
-            ldy #0              ; count alive+dying
-.chkAll     cpx NumTgts
-            bcs .chkDone
-            lda TgtALive,x
-            beq .chkNext
-            iny                 ; still alive or dying
-.chkNext    inx
-            cpx NumTgts         ; Opt 6
-            bcc .chkAll
-.chkDone    cpy #0
+            cpy #0
             bne .noLvlAdv
             ; All dead and done dying -> level up
             lda #MODE_LVLUP
@@ -677,50 +669,9 @@ GameLogic SUBROUTINE
             bne .expLoop
 .gfxDone
 
-            ; Sound engine
+            ; Sound engine (simplified)
             lda SndType
             beq .nsd
-            cmp #1
-            beq .shootDec
-            cmp #2
-            beq .hitDec
-            cmp #4
-            beq .lvlDec
-            jmp .simpleDec
-.shootDec
-            lda FrameCount
-            and #1
-            bne .nsd
-            lda SndVol
-            beq .sndOff
-            sec
-            sbc #2
-            bpl .shSt
-            lda #0
-.shSt       sta SndVol
-            sta AUDV0
-            jmp .nsd
-.hitDec
-            lda SndVol
-            cmp #8
-            bcs .h1
-            lda #14
-            sta AUDC0
-.h1         lda FrameCount
-            and #1
-            bne .nsd
-            jmp .simpleDec
-.lvlDec
-            lda FrameCount
-            and #3
-            bne .nsd
-            lda AUDF0
-            sec
-            sbc #1
-            bpl .lvSt
-            lda #0
-.lvSt       sta AUDF0
-.simpleDec
             lda FrameCount
             and #1
             bne .nsd
@@ -1758,7 +1709,10 @@ RenderCycloid SUBROUTINE
             ; After writing left PF2 at cycle 21, wait until cycle ~37,
             ; then write right PF2, then PF1, then PF0.
             
-            ; We're at cycle ~21. Need to burn ~16 cycles to reach ~37.
+            ; Timing: left PF2 latched at cycle ~36, right PF2 at ~44
+            ; We're at cycle ~21 after writing left PF2.
+            ; Need to wait until cycle ~42 before writing right PF2.
+            ; Burn 21 cycles (10.5 NOPs, use 10 NOPs + 1 extra cycle)
             nop                  ; 2 = 23
             nop                  ; 2 = 25
             nop                  ; 2 = 27
@@ -1767,13 +1721,15 @@ RenderCycloid SUBROUTINE
             nop                  ; 2 = 33
             nop                  ; 2 = 35
             nop                  ; 2 = 37
-            ; --- RIGHT HALF: update PF2 first (it draws first in reflect) ---
-            lda CycRPF2,y       ; 4 = 41
-            sta PF2              ; 3 = 44
-            lda CycRPF1,y       ; 4 = 48
-            sta PF1              ; 3 = 51
-            lda CycRPF0,y       ; 4 = 55
-            sta PF0              ; 3 = 58 (right PF0 draws at ~65, safe!)
+            nop                  ; 2 = 39
+            nop                  ; 2 = 41
+            ; --- RIGHT HALF: update PF2 first (draws first in reflect) ---
+            lda CycRPF2,y       ; 4 = 45  (right PF2 latches at ~44, just in time)
+            sta PF2              ; 3 = 48
+            lda CycRPF1,y       ; 4 = 52  (right PF1 at ~52)
+            sta PF1              ; 3 = 55
+            lda CycRPF0,y       ; 4 = 59  (right PF0 at ~60)
+            sta PF0              ; 3 = 62
 
             dex
             bne .scanLine
@@ -1861,11 +1817,11 @@ OverR2      .byte $1D,$14,$14,$1D,$0C,$14,$15,$15
 
 ; CYCLOID - asymmetric playfield (mid-scanline PF update trick)
 CycLPF0     .byte $00,$00,$00,$00,$00,$00,$00,$00
-CycLPF1     .byte $3A,$22,$21,$21,$21,$21,$39,$39
-CycLPF2     .byte $5D,$45,$44,$44,$44,$44,$DC,$DC
+CycLPF1     .byte $1D,$11,$10,$10,$10,$10,$1C,$1C
+CycLPF2     .byte $BA,$8A,$89,$89,$89,$89,$B9,$B9
 CycRPF0     .byte $00,$00,$00,$00,$00,$00,$00,$00
-CycRPF1     .byte $0D,$14,$14,$14,$14,$14,$0D,$0D
-CycRPF2     .byte $3B,$29,$29,$29,$29,$29,$BB,$BB
+CycRPF1     .byte $1B,$29,$29,$29,$29,$29,$1B,$1B
+CycRPF2     .byte $1D,$14,$14,$14,$14,$14,$DD,$DD
 
 DigitSprites
             .byte $38,$44,$44,$44,$44,$44,$38,$38  ; 0

@@ -1,5 +1,17 @@
 # Changelog - Cyloid
 
+## v0.4 - April 22, 2026
+
+### Fixes
+- Fixed CYCLOID title "L" rendering — proper 3px wide letter with full bottom bar
+- Fixed asymmetric PF timing — added 2 extra NOPs to delay right-half PF2 write past cycle 44 (left PF2 latch point), fixing garbled C and L in center of screen
+- Fixed screen height jitter during gameplay — VBLANK processing was overrunning timer on busy frames
+
+### Performance
+- VBLANK timer increased from 43 to 44 (64 more cycles headroom)
+- Combined death timer + alive check into single loop pass (saves ~50 cycles)
+- Simplified sound engine — universal decay replaces per-type branching (saves ~30 cycles)
+
 ## v0.3 - April 22, 2026
 
 ### Title Sequence
