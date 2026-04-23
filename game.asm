@@ -273,6 +273,11 @@ SetupLevel SUBROUTINE
             rts
 
 GenObstacles SUBROUTINE
+            ; Density scales with level via mask table
+            ldy Level
+            lda LvlObsMask,y   ; density mask for this level
+            sta TempVar         ; store mask
+
             lda Level
             asl
             asl
@@ -280,51 +285,55 @@ GenObstacles SUBROUTINE
             clc
             adc FrameCount
             tax
+            ; Band 0
             txa
             asl
             eor #$A5
-            and #%01011010
+            and TempVar
             sta ObsPF1
             txa
             lsr
             eor #$5A
-            and #%01011010
+            and TempVar
             sta ObsPF2
+            ; Band 1
             txa
             clc
             adc #$37
             eor #$C3
-            and #%01111110
+            and TempVar
             sta ObsPF1+1
             txa
             clc
             adc #$91
             eor #$3C
-            and #%01100110
+            and TempVar
             sta ObsPF2+1
+            ; Band 2
             txa
             clc
             adc #$6B
             eor #$55
-            and #%01010100
+            and TempVar
             sta ObsPF1+2
             txa
             clc
             adc #$D2
             eor #$AA
-            and #%00101010
+            and TempVar
             sta ObsPF2+2
+            ; Band 3
             txa
             clc
             adc #$1F
             eor #$69
-            and #%01111100
+            and TempVar
             sta ObsPF1+3
             txa
             clc
             adc #$E4
             eor #$96
-            and #%00111110
+            and TempVar
             sta ObsPF2+3
             rts
 
@@ -408,11 +417,11 @@ GameLogic SUBROUTINE
             sta MissileOn
             lda TankX
             clc
-            adc #3
+            adc #2              ; center 4-wide missile on 8px tank
             sta MissileX
             lda TankY
             clc
-            adc #3
+            adc #2
             sta MissileY
             lda TankDir
             sta MissileDir
@@ -547,15 +556,12 @@ GameLogic SUBROUTINE
             sta GameMode
             lda #120
             sta StateTimer
-            lda #4
-            sta AUDC0
-            lda #10
+            ; Silence all sounds before score screen
+            lda #0
             sta SndVol
-            sta AUDV0
-            lda #15
-            sta AUDF0
-            lda #4
             sta SndType
+            sta AUDV0
+            sta AUDV1
             jmp .afterMove
 .noLvlAdv
 
@@ -803,11 +809,34 @@ LvlUpLogic SUBROUTINE
             lda #MODE_PLAY
             sta GameMode
             jmp WaitDraw
-.wait       ; Only build digits on first frame
+.wait       ; Build digits on first frame + init jingle
             lda StateTimer
             cmp #119
-            bne .skip
+            bne .playJingle
             jsr BuildDigits
+            lda #0
+            sta MelodyIdx
+            lda #1
+            sta MelodyTimer
+.playJingle
+            ; Victory jingle on ch1
+            dec MelodyTimer
+            bne .skip
+            ldx MelodyIdx
+            cpx #12             ; 12 notes
+            bcs .jingleDone
+            lda VictoryNotes,x
+            sta AUDF1
+            lda #4              ; pure tone
+            sta AUDC1
+            lda VictoryVols,x
+            sta AUDV1
+            lda #8              ; 8 frames per note (fast arpeggio)
+            sta MelodyTimer
+            inc MelodyIdx
+            jmp .skip
+.jingleDone lda #0
+            sta AUDV1
 .skip       jmp WaitDraw
 
 ScoreLogic SUBROUTINE
@@ -825,8 +854,31 @@ ScoreLogic SUBROUTINE
             jmp WaitDraw
 .wait       lda StateTimer
             cmp #149
-            bne .skip
+            bne .playJingle
             jsr BuildDigits
+            lda #0
+            sta MelodyIdx
+            lda #1
+            sta MelodyTimer
+.playJingle
+            ; Score screen uses game over melody (already defined)
+            dec MelodyTimer
+            bne .skip
+            ldx MelodyIdx
+            cpx #8
+            bcs .melDone
+            lda MelodyNotes,x
+            sta AUDF1
+            lda #12
+            sta AUDC1
+            lda MelodyVols,x
+            sta AUDV1
+            lda #18
+            sta MelodyTimer
+            inc MelodyIdx
+            jmp .skip
+.melDone    lda #0
+            sta AUDV1
 .skip       jmp WaitDraw
 
 BuildDigits SUBROUTINE
@@ -1429,63 +1481,6 @@ DrawText1 SUBROUTINE
             bne .b
             rts
 
-DrawText2 SUBROUTINE
-            ldy #40
-.t          sta WSYNC
-            dey
-            bne .t
-            ldy #0
-.r1         lda PFData0,y
-            sta TempVar
-            ldx #6
-.s1         sta WSYNC
-            lda TempVar
-            sta PF0
-            lda PFData1,y
-            sta PF1
-            lda PFData2,y
-            sta PF2
-            dex
-            bne .s1
-            sta WSYNC
-            lda #0
-            sta PF0
-            sta PF1
-            sta PF2
-            iny
-            cpy #8
-            bne .r1
-            ldy #8
-.g          sta WSYNC
-            dey
-            bne .g
-            ldy #0
-.r2         lda EntsR0,y
-            sta TempVar
-            ldx #6
-.s2         sta WSYNC
-            lda TempVar
-            sta PF0
-            lda EntsR1,y
-            sta PF1
-            lda EntsR2,y
-            sta PF2
-            dex
-            bne .s2
-            sta WSYNC
-            lda #0
-            sta PF0
-            sta PF1
-            sta PF2
-            iny
-            cpy #8
-            bne .r2
-            ldy #32
-.b          sta WSYNC
-            dey
-            bne .b
-            rts
-
 RenderKeith SUBROUTINE
             lda #$00
             sta COLUBK
@@ -1535,21 +1530,60 @@ RenderAdler SUBROUTINE
 RenderPresents SUBROUTINE
             lda #$00
             sta COLUBK
-            lda #$1C
-            sta COLUPF
-            lda #%00000001
+            lda #%00000001      ; REFLECT mode for asymmetric
             sta CTRLPF
-            ldx #0
-.cp         lda PresR0,x
-            sta PFData0,x
-            lda PresR1,x
-            sta PFData1,x
-            lda PresR2,x
-            sta PFData2,x
-            inx
-            cpx #8
-            bne .cp
-            jsr DrawText2
+            lda #0
+            sta PF0
+            sta PF1
+            sta PF2
+
+            ldy #68
+.top        sta WSYNC
+            dey
+            bne .top
+
+            ldy #0
+.row        lda #$1C            ; gold color
+            sta COLUPF
+            ldx #7
+.scan       sta WSYNC
+            lda PresLPF0,y
+            sta PF0
+            lda PresLPF1,y
+            sta PF1
+            lda PresLPF2,y
+            sta PF2
+            nop
+            nop
+            nop
+            nop
+            nop
+            nop
+            nop
+            nop
+            nop
+            nop
+            lda PresRPF2,y
+            sta PF2
+            lda PresRPF1,y
+            sta PF1
+            lda PresRPF0,y
+            sta PF0
+            dex
+            bne .scan
+            sta WSYNC
+            lda #0
+            sta PF0
+            sta PF1
+            sta PF2
+            iny
+            cpy #8
+            bne .row
+
+            ldy #68
+.bot        sta WSYNC
+            dey
+            bne .bot
             jmp DoOverscan
 
 RenderCyloid SUBROUTINE
@@ -1693,11 +1727,26 @@ LvlTgt      .byte $36,$2A,$1C,$44,$C8,$9A,$36,$1C
 LvlDirX     .byte $00,$01,$FF,$01,$FF,$01,$FF,$01
 LvlDirY     .byte $00,$00,$01,$FF,$01,$FF,$01,$FF
 
+; Obstacle density masks per level (more bits = more obstacles)
+; Level 0: very sparse, Level 7: very dense
+LvlObsMask  .byte %00010000    ; 0: minimal
+            .byte %00100100    ; 1: light
+            .byte %01001010    ; 2: moderate
+            .byte %01011010    ; 3: medium
+            .byte %01101110    ; 4: heavy
+            .byte %01111110    ; 5: dense
+            .byte %01111110    ; 6: dense
+            .byte %01111110    ; 7: max
+
 ; Bug 3: safe Y positions for targets (avoid all obstacle bands)
 SafeYTbl    .byte 40,70,105,135,165
 
 MelodyNotes .byte 8,9,11,12,15,17,20,24
 MelodyVols  .byte 12,11,10,9,8,7,5,3
+
+; Victory jingle - ascending major arpeggio with flourish (12 notes)
+VictoryNotes .byte 20,17,15,12,10,8,6,8,6,4,6,4
+VictoryVols  .byte 8,9,10,11,12,12,13,12,13,14,12,10
 
 KeithR0     .byte $50,$50,$30,$10,$30,$50,$50,$50
 KeithR1     .byte $EE,$84,$84,$E4,$84,$84,$EE,$EE
@@ -1705,12 +1754,13 @@ KeithR2     .byte $57,$52,$52,$72,$52,$52,$52,$52
 AdlerR0     .byte $20,$50,$50,$70,$50,$50,$50,$50
 AdlerR1     .byte $C8,$A8,$A8,$A8,$A8,$A8,$CE,$CE
 AdlerR2     .byte $77,$51,$51,$77,$31,$51,$57,$57
-PresR0      .byte $C0,$40,$40,$C0,$40,$40,$40,$40
-PresR1      .byte $BB,$AA,$AA,$BB,$32,$2A,$2B,$2B
-PresR2      .byte $1D,$04,$04,$1D,$10,$10,$1D,$1D
-EntsR0      .byte $C0,$40,$40,$C0,$40,$40,$C0,$C0
-EntsR1      .byte $AB,$39,$39,$A9,$29,$29,$A9,$A9
-EntsR2      .byte $1D,$04,$04,$1C,$10,$10,$1C,$1C
+; PRESENTS - asymmetric playfield
+PresLPF0    .byte $00,$00,$00,$00,$00,$00,$00,$00
+PresLPF1    .byte $77,$55,$55,$77,$46,$45,$45,$45
+PresLPF2    .byte $EE,$22,$22,$EE,$82,$82,$EE,$EE
+PresRPF0    .byte $00,$00,$00,$00,$00,$00,$00,$00
+PresRPF1    .byte $EE,$24,$24,$E4,$84,$84,$E4,$E4
+PresRPF2    .byte $75,$47,$47,$75,$45,$45,$75,$75
 GameR0      .byte $C0,$40,$40,$40,$40,$40,$C0,$C0
 GameR1      .byte $92,$2B,$2B,$BA,$AA,$AA,$AA,$AA
 GameR2      .byte $1D,$05,$05,$1D,$05,$05,$1D,$1D

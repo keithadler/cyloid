@@ -1,5 +1,29 @@
 # Changelog - Cyloid
 
+## v0.7 - April 23, 2026
+
+### Title Sequence
+- "PRESENTS" now displays as single non-mirrored word using asymmetric PF hack
+- All 8 letters (PRESENTS) centered in 40 unique pixels, gold on black
+- Removed old two-line PRES/ENTS split and DrawText2 subroutine
+
+### Gameplay
+- Obstacle density scales with level — level 0 has minimal obstacles, ramping to dense by level 5+
+- Per-level density mask table controls PF bit patterns
+
+### Fixes
+- Bullet centered on tank (TankX+2 instead of +3 for 4-wide missile)
+- Silenced all sounds when entering level-up screen — no more lingering chime behind victory jingle
+
+### Audio
+- Victory jingle on level-up score screen — 12-note ascending major arpeggio
+- Somber melody on game-over score screen — 8-note descending minor scale
+
+### Technical
+- Removed DrawText2 subroutine (dead code after PRESENTS rewrite)
+- Removed old PRES/ENTS mirrored PF data
+- 1124 bytes ROM free
+
 ## v0.6 - April 23, 2026
 
 ### Fixes
