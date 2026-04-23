@@ -181,6 +181,7 @@ InitGame SUBROUTINE
             sta TgtY
             sta TgtLive
             sta SndType
+            sta NumTgts         ; Bug 9: clear before SetupLevel
             lda #2
             sta Lives
             sta CXCLR
@@ -206,13 +207,12 @@ SetupLevel SUBROUTINE
             adc #2              ; 2-5
             sta NumTgts
 
-            ; Spawn targets at varied positions
+            ; Spawn targets at safe, spread positions
             ldx #0
-            ldy #0              ; Y position seed
 .spawnLoop
             cpx NumTgts
             bcs .spawnDone
-            ; X position: spread across field
+            ; X position: spread across field, clamped
             txa
             asl
             asl
@@ -220,17 +220,17 @@ SetupLevel SUBROUTINE
             asl
             asl                 ; X * 32
             clc
-            adc #25
-            sta TgtAX,x
-            ; Y position: spread vertically in safe zones
-            tya
-            clc
-            adc #35             ; start at safe zone
+            adc #20
+            cmp #130            ; Bug 2: clamp X
+            bcc .xSafe
+            lda #100
+.xSafe      sta TgtAX,x
+            ; Y position: safe zones avoiding obstacle bands
+            ; Bands at (line & $1F) >= $18: 24-31, 56-63, 88-95, 120-127, 152-159
+            ; Safe: 35-55, 65-87, 97-119, 129-151, 161-175
+            ; Bug 3: use lookup table for safe Y positions
+            lda SafeYTbl,x
             sta TgtAY,x
-            tya
-            clc
-            adc #28             ; space them ~28 apart
-            tay
             ; Alive
             lda #1
             sta TgtALive,x
@@ -258,13 +258,6 @@ SetupLevel SUBROUTINE
             sbc TgtADirY,x
             sta TgtADirY,x
 .noFlipY
-            ; Restore Y seed
-            lda TgtAY,x
-            sec
-            sbc #35
-            clc
-            adc #28
-            tay
             inx
             jmp .spawnLoop
 .spawnDone
@@ -418,7 +411,10 @@ GameLogic SUBROUTINE
             lda TankY
             clc
             adc #3
-            sta MissileY
+            cmp #10             ; Bug 4: clamp to visible field
+            bcs .myOk
+            lda #10
+.myOk       sta MissileY
             lda TankDir
             sta MissileDir
             lda #15
@@ -872,12 +868,9 @@ LvlUpLogic SUBROUTINE
             lda #MODE_PLAY
             sta GameMode
             jmp WaitDraw
-.wait       ; Opt 7: only build digits on first frame (timer=119)
-            lda StateTimer
-            cmp #119
-            bne .skip
+.wait       ; Bug 5: rebuild offsets every frame (inc corrupts them)
             jsr BuildDigits
-.skip       jmp WaitDraw
+            jmp WaitDraw
 
 ScoreLogic SUBROUTINE
             dec StateTimer
@@ -892,12 +885,9 @@ ScoreLogic SUBROUTINE
             lda #180
             sta StateTimer
             jmp WaitDraw
-.wait       ; Opt 7: only build on first frame (timer=149)
-            lda StateTimer
-            cmp #149
-            bne .skip
+.wait       ; Bug 5: rebuild every frame
             jsr BuildDigits
-.skip       jmp WaitDraw
+            jmp WaitDraw
 
 BuildDigits SUBROUTINE
             lda Score
@@ -954,6 +944,8 @@ OverLogic SUBROUTINE
             jmp .w
 .melDone    lda #0
             sta AUDV1
+            lda #255            ; Bug 8: prevent wrap-around re-triggering
+            sta MelodyTimer
 .w          jmp WaitDraw
 
 ;===============================================================================
@@ -1094,57 +1086,26 @@ DrawGame SUBROUTINE
 
             ldx #0
 
-            ; Score bar: 5 lines (Opt 4: fixed color, no per-line gradient)
+            ; Top border: 8 black lines (replaces score bar + wall)
             lda #$00
             sta COLUBK
-            lda #$1C            ; gold
             sta COLUPF
-            sta PF1
-            sta PF2
-.scr        sta WSYNC
-            txa
-            asl
-            asl
-            asl
-            cmp Score
-            bcs .sOff
-            lda #%11110000
-            sta PF0
-            jmp .sN
-.sOff       lda #0
-            sta PF0
-.sN         inx
-            cpx #5
-            bne .scr
-            sta WSYNC
-            lda #0
             sta PF0
             sta PF1
             sta PF2
+.topBorder  sta WSYNC
             inx
+            cpx #8
+            bne .topBorder
 
-            ; Top wall
-            lda FieldColor
-            sta COLUBK
-            lda WallColor
-            ora #$0E
-            sta COLUPF
-            sta WSYNC
-            lda #%11110000
-            sta PF0
-            lda #%11111111
-            sta PF1
-            sta PF2
-            inx
-            sta WSYNC
-            inx
-
+            ; Field
             lda FieldColor
             sta COLUBK
             lda WallColor
             ora #$08
             sta COLUPF
-            lda #%10000000
+            ; No side walls - clean field
+            lda #0
             sta PF0
 
             lda TankY
@@ -1153,13 +1114,18 @@ DrawGame SUBROUTINE
             sta TempVar
 
             ; 2-line kernel
+            ; Bug 10: offset obstacle check by 8 to push bands away from top
 .fLoop
             txa
+            sec
+            sbc #8              ; offset so first band starts at line 32
             and #$1F
             sec
             sbc #$18
             bcc .obsOff
             txa
+            sec
+            sbc #8              ; same offset for band index
             lsr
             lsr
             lsr
@@ -1239,15 +1205,7 @@ DrawGame SUBROUTINE
             sta WSYNC
             jmp .fLoop
 .fEnd
-            sta WSYNC
-            lda #%11110000
-            sta PF0
-            lda #%11111111
-            sta PF1
-            sta PF2
-            inx
-            sta WSYNC
-            inx
+            ; Bottom border: 8 black lines (replaces wall + blank)
             lda #0
             sta PF0
             sta PF1
@@ -1485,6 +1443,7 @@ DoOverscan
             sta GRP0
             sta GRP1
             sta ENAM0
+            sta ENABL           ; Bug 7: clear ball object
             sta PF0
             sta PF1
             sta PF2
@@ -1792,6 +1751,9 @@ LvlWall     .byte $D2,$B0,$94,$F2,$C2,$04,$72,$44
 LvlTgt      .byte $36,$2A,$1C,$44,$C8,$9A,$36,$1C
 LvlDirX     .byte $00,$01,$FF,$01,$FF,$01,$FF,$01
 LvlDirY     .byte $00,$00,$01,$FF,$01,$FF,$01,$FF
+
+; Bug 3: safe Y positions for targets (avoid all obstacle bands)
+SafeYTbl    .byte 40,70,105,135,165
 
 MelodyNotes .byte 8,9,11,12,15,17,20,24
 MelodyVols  .byte 12,11,10,9,8,7,5,3

@@ -1,5 +1,24 @@
 # Changelog - Cyloid
 
+## v0.5 - April 23, 2026
+
+### Visual
+- All borders now pure black (top, bottom, left, right)
+- Removed score bar from top of game screen
+- Obstacle bands offset 8 lines into field for better top-area navigation
+
+### Bug Fixes (10)
+1. Target spawn Y seed corruption — Y register was shared between position seed and Level index lookup, causing garbled positions after first target
+2. Target X overflow — target at index 4 got X=153 (past boundary). Clamped to 130
+3. Target Y in obstacle bands — spacing of 28 from Y=35 put targets at Y=63 and Y=91 (inside bands). Now uses safe Y lookup table: 40, 70, 105, 135, 165
+4. Missile Y below field — firing at TankY=12 put missile at Y=15 (in black border). Clamped to minimum Y=10
+5. Digit screen offsets corrupted — `inc TensOff`/`inc OnesOff` in renderer modified offsets, but BuildDigits only ran on first frame. Now rebuilds every frame
+6. *(Verified correct — FlickerSel TgtLive values handled properly)*
+7. Ball object (ENABL) not cleared in DoOverscan — could persist between screens
+8. Melody timer wrap-around — after melody finished, `dec MelodyTimer` wrapped 0→255, running dead check 255 times. Set timer to 255 when done
+9. NumTgts not cleared in InitGame — stale value from previous game could cause FlickerSel to read garbage between init and SetupLevel
+10. Obstacle bands too close to top border — first band at scanline 24 was only 16 lines into field. Added 8-line offset so first band starts at scanline 32
+
 ## v0.4 - April 22, 2026
 
 ### Fixes
