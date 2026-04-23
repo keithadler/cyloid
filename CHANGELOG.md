@@ -1,5 +1,26 @@
 # Changelog - Cyloid
 
+## v0.13 - April 23, 2026
+
+### Documentation
+- Comprehensive README with full game documentation
+- Build instructions, controls, gameplay mechanics
+- Technical architecture: kernel design, frame split, asymmetric PF, flicker multiplexing
+- Collision detection methods, sound design tables, memory map
+- Sprite data layout, level data tables
+
+### Bug Fixes (10)
+- Boss spawns from random edge (left or right) instead of always left
+- First frame joystick input no longer lost on game start
+- Dying boss can no longer be moved by homing logic
+- FlickerSel infinite loop guard when NumTgts=0
+- Boss X clamped to screen bounds (0-155)
+- Boss Y clamped to screen bounds (10-175)
+- PRESENTS scanline count fixed (was 191, now 192)
+- Hit detection restored to 2 targets per frame for better accuracy
+- Boss death animation properly skips movement gate
+- Branch out of range fix for boss dying check
+
 ## v0.12 - April 23, 2026
 
 ### Fix
