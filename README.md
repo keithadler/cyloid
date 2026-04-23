@@ -1,6 +1,8 @@
 # Cyloid
 
-A tank shooter for the Atari 2600, written in 6502 assembly.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+A tank shooter for the Atari 2600, written in 6502 assembly. Open source under the MIT license.
 
 ## 🎮 Play in Browser
 
@@ -198,7 +200,24 @@ Digit sprites: 10 digits × 8 bytes (5px wide centered in 8px)
 ## Repository
 
 - `game.asm` — Main game source (~2000 lines)
+- `cyloid.rom` — Pre-built ROM (4KB, playable in any Atari 2600 emulator)
 - `vcs.h` — TIA/RIOT register definitions
 - `macro.h` — Standard macros (CLEAN_START, VERTICAL_SYNC, SLEEP)
 - `Makefile` — Build automation
 - `CHANGELOG.md` — Version history
+- `LICENSE` — MIT License
+
+## Contributing
+
+Contributions welcome! Fork the repo, make changes, and submit a pull request. The game is written in 6502 assembly for the DASM assembler.
+
+## Acknowledgments
+
+- [Javatari.js](https://javatari.org) by Paulo Augusto Peccin — browser-based Atari 2600 emulator that makes it possible to play Cyloid online
+- [Stella](https://stella-emu.github.io) — the reference Atari 2600 emulator used during development
+- [DASM](https://github.com/dasm-assembler/dasm) — the macro assembler for 6502
+- The Atari 2600 homebrew community at [AtariAge](https://atariage.com) for decades of knowledge sharing
+
+## License
+
+This project is open source under the [MIT License](LICENSE).
