@@ -368,7 +368,7 @@ GameLogic SUBROUTINE
             ; Player moved! Start the game
             lda #1
             sta SubState
-            jmp .gameStarted
+            ; Fall through to gameStarted with this frame's input
 .waitForMove
             jmp WaitDraw        ; draw the field but don't run logic
 
@@ -520,7 +520,7 @@ GameLogic SUBROUTINE
             sta MissileOn
             jmp .frameDone
 
-.mHit       ; Check 1 target per frame (rotate)
+.mHit       ; Check 2 targets per frame (rotate)
             lda FrameCount
             lsr
             and #$07
@@ -528,9 +528,10 @@ GameLogic SUBROUTINE
             bcc .idx1ok
             lda #0
 .idx1ok     tax
+            ; Target 1
             lda TgtALive,x
             cmp #1
-            bne .hitMiss
+            bne .try2nd
             lda MissileY
             sec
             sbc TgtAY,x
@@ -538,7 +539,7 @@ GameLogic SUBROUTINE
             eor #$FF
             adc #1
 .hy1        cmp #12
-            bcs .hitMiss
+            bcs .try2nd
             lda MissileX
             sec
             sbc TgtAX,x
@@ -546,8 +547,33 @@ GameLogic SUBROUTINE
             eor #$FF
             adc #1
 .hx1        cmp #12
+            bcs .try2nd
+            jmp .hitTarget
+            ; Target 2
+.try2nd     inx
+            cpx NumTgts
+            bcc .idx2ok
+            ldx #0
+.idx2ok     lda TgtALive,x
+            cmp #1
+            bne .hitMiss
+            lda MissileY
+            sec
+            sbc TgtAY,x
+            bcs .hy2
+            eor #$FF
+            adc #1
+.hy2        cmp #12
             bcs .hitMiss
-            ; HIT
+            lda MissileX
+            sec
+            sbc TgtAX,x
+            bcs .hx2
+            eor #$FF
+            adc #1
+.hx2        cmp #12
+            bcs .hitMiss
+.hitTarget  ; HIT
             lda #15
             sta TgtALive,x
             lda #0
@@ -678,6 +704,8 @@ GameLogic SUBROUTINE
 .skipMv
 
             ; Flicker select (inline)
+            lda NumTgts         ; Bug 5: guard for 0 targets
+            beq .fNone
             ldx FlickerIdx
             inx
             cpx NumTgts
@@ -696,6 +724,9 @@ GameLogic SUBROUTINE
             lda #0
             sta TgtLive
             jmp .fDone
+.fNone      lda #0
+            sta TgtLive
+            jmp .fDone
 .fFound     sta TgtLive
             lda TgtAX,x
             sta TgtX
@@ -705,14 +736,25 @@ GameLogic SUBROUTINE
 
             ; Boss timer decrements every odd frame (not gated)
             lda BossActive
-            bne .bossLogicGate
+            cmp #2
+            bcc .bossNotDying
+            jmp .bossSkipLogic  ; dying, skip
+.bossNotDying
+            cmp #1
+            beq .bossLogicGate
             dec BossTimer
             bne .bossLogicGate
-            ; Spawn boss
+            ; Spawn boss from random edge
             lda #1
             sta BossActive
-            lda #0
-            sta BossX
+            ; Random: spawn from left or right
+            lda FrameCount
+            and #1
+            beq .spawnLeft
+            lda #155            ; spawn from right
+            jmp .spawnXset
+.spawnLeft  lda #5              ; spawn from left
+.spawnXset  sta BossX
             lda FrameCount
             eor Score
             and #$7F
@@ -761,6 +803,13 @@ GameLogic SUBROUTINE
             bcc .bmx
             inc BossX
 .bmx
+            ; Clamp boss X to screen
+            lda BossX
+            cmp #160
+            bcc .bxOk
+            lda #155
+            sta BossX
+.bxOk
             ; Home toward player Y (same speed scaling)
             lda BossY
             cmp TankY
@@ -787,6 +836,19 @@ GameLogic SUBROUTINE
             inc BossY
 
 .bossEnd
+            ; Clamp boss Y
+            lda BossY
+            cmp #180
+            bcc .byClamp
+            lda #175
+            sta BossY
+.byClamp
+            lda BossY
+            cmp #10
+            bcs .byClamp2
+            lda #10
+            sta BossY
+.byClamp2
 .bossSkipLogic
 
             ; Collision
@@ -1939,7 +2001,7 @@ RenderPresents SUBROUTINE
             sta PF1
             sta PF2
 
-            ldy #63             ; 63 + 1 VBLANK-off = 64 top
+            ldy #64             ; 64 top lines
 .top        sta WSYNC
             dey
             bne .top
