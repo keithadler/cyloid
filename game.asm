@@ -1,0 +1,1785 @@
+; game.asm - Cyloid Tank Game - Atari 2600 (4KB)
+; Build: dasm game.asm -f3 -ogame.bin
+
+            processor 6502
+            include "vcs.h"
+            include "macro.h"
+
+;===============================================================================
+; Constants
+;===============================================================================
+
+MODE_TITLE     = 0
+MODE_PLAY      = 1
+MODE_OVER      = 2
+MODE_LVLUP     = 3
+MODE_SCORE     = 4          ; score display after game over
+
+TITLE_KEITH    = 0
+TITLE_ADLER    = 1
+TITLE_PRESENTS = 2
+TITLE_BLACK    = 3
+NUM_TITLE      = 4
+
+TANK_H         = 8
+MAX_TGTS       = 5          ; max enemies per level
+
+;===============================================================================
+; Variables
+;===============================================================================
+
+            SEG.U Variables
+            ORG $80
+
+GameMode    ds 1
+SubState    ds 1
+StateTimer  ds 1
+FrameCount  ds 1
+TempVar     ds 1
+
+PFData0     ds 8
+PFData1     ds 8
+PFData2     ds 8
+
+TankX       ds 1
+TankY       ds 1
+TankDir     ds 1
+
+MissileX    ds 1
+MissileY    ds 1
+MissileDir  ds 1
+MissileOn   ds 1
+
+; Current flicker-selected target for kernel
+TgtX        ds 1
+TgtY        ds 1
+TgtLive     ds 1
+
+; Target arrays (5 targets max)
+TgtAX       ds MAX_TGTS
+TgtAY       ds MAX_TGTS
+TgtALive    ds MAX_TGTS     ; 0=dead, 1=alive, 2+=dying (death timer)
+TgtADirX    ds MAX_TGTS
+TgtADirY    ds MAX_TGTS
+NumTgts     ds 1            ; how many targets this level (1-5)
+FlickerIdx  ds 1
+
+Score       ds 1
+ButtonPrev  ds 1
+SndVol      ds 1
+Lives       ds 1
+HitFlash    ds 1
+Level       ds 1
+KillCount   ds 1
+FieldColor  ds 1
+WallColor   ds 1
+TgtColor    ds 1
+
+TankGfxBuf  ds 8
+ObsPF1      ds 4
+ObsPF2      ds 4
+Moving      ds 1
+MelodyIdx   ds 1
+MelodyTimer ds 1
+TensOff     ds 1
+OnesOff     ds 1
+SndType     ds 1
+
+;===============================================================================
+; Code
+;===============================================================================
+
+            SEG Code
+            ORG $F000
+
+Reset
+            CLEAN_START
+            lda #MODE_TITLE
+            sta GameMode
+            lda #TITLE_KEITH
+            sta SubState
+            lda #180
+            sta StateTimer
+
+;===============================================================================
+; MAIN LOOP
+;===============================================================================
+MainLoop
+            lda #2
+            sta VSYNC
+            sta WSYNC
+            sta WSYNC
+            sta WSYNC
+            lda #0
+            sta VSYNC
+            lda #2
+            sta VBLANK
+            lda #43
+            sta TIM64T
+            inc FrameCount
+
+            lda GameMode
+            cmp #MODE_PLAY
+            beq .play
+            cmp #MODE_OVER
+            beq .over
+            cmp #MODE_LVLUP
+            beq .lvlup
+            cmp #MODE_SCORE
+            beq .score
+            jmp TitleLogic
+.play       jmp GameLogic
+.over       jmp OverLogic
+.lvlup      jmp LvlUpLogic
+.score      jmp ScoreLogic
+
+;===============================================================================
+; TITLE
+;===============================================================================
+TitleLogic SUBROUTINE
+            dec StateTimer
+            bne .done
+            ldx SubState
+            inx
+            cpx #NUM_TITLE
+            bcc .next
+            lda #MODE_PLAY
+            sta GameMode
+            jsr InitGame
+            jmp .done
+.next       stx SubState
+            lda TitleTimers,x
+            sta StateTimer
+.done       jmp WaitDraw
+
+TitleTimers .byte 180,150,150,90
+
+;===============================================================================
+; INIT
+;===============================================================================
+InitGame SUBROUTINE
+            lda #78
+            sta TankX
+            lda #170
+            sta TankY
+            lda #0
+            sta TankDir
+            sta MissileOn
+            sta Score
+            sta Level
+            sta KillCount
+            sta FlickerIdx
+            sta HitFlash
+            sta SndVol
+            sta AUDV0
+            sta AUDV1
+            sta Moving
+            sta MelodyIdx
+            sta MelodyTimer
+            sta TgtX
+            sta TgtY
+            sta TgtLive
+            sta SndType
+            lda #2
+            sta Lives
+            sta CXCLR
+            jsr SetupLevel
+            rts
+
+SetupLevel SUBROUTINE
+            ldx Level
+            lda LvlField,x
+            sta FieldColor
+            lda LvlWall,x
+            sta WallColor
+            lda LvlTgt,x
+            sta TgtColor
+            lda #0
+            sta KillCount
+
+            ; Random enemy count: 2-5 based on level + frame
+            lda FrameCount
+            eor Level
+            and #$03            ; 0-3
+            clc
+            adc #2              ; 2-5
+            sta NumTgts
+
+            ; Spawn targets at varied positions
+            ldx #0
+            ldy #0              ; Y position seed
+.spawnLoop
+            cpx NumTgts
+            bcs .spawnDone
+            ; X position: spread across field
+            txa
+            asl
+            asl
+            asl
+            asl
+            asl                 ; X * 32
+            clc
+            adc #25
+            sta TgtAX,x
+            ; Y position: spread vertically in safe zones
+            tya
+            clc
+            adc #35             ; start at safe zone
+            sta TgtAY,x
+            tya
+            clc
+            adc #28             ; space them ~28 apart
+            tay
+            ; Alive
+            lda #1
+            sta TgtALive,x
+            ; Direction from level table
+            ldy Level
+            lda LvlDirX,y
+            sta TgtADirX,x
+            ; Alternate direction for odd targets
+            txa
+            and #1
+            beq .noFlip
+            lda #0
+            sec
+            sbc TgtADirX,x
+            sta TgtADirX,x
+.noFlip
+            ldy Level
+            lda LvlDirY,y
+            sta TgtADirY,x
+            txa
+            and #1
+            beq .noFlipY
+            lda #0
+            sec
+            sbc TgtADirY,x
+            sta TgtADirY,x
+.noFlipY
+            ; Restore Y seed
+            lda TgtAY,x
+            sec
+            sbc #35
+            clc
+            adc #28
+            tay
+            inx
+            jmp .spawnLoop
+.spawnDone
+            ; Clear remaining slots
+.clearLoop  cpx #MAX_TGTS
+            bcs .clearDone
+            lda #0
+            sta TgtALive,x
+            inx
+            jmp .clearLoop
+.clearDone
+            jsr GenObstacles
+            rts
+
+GenObstacles SUBROUTINE
+            lda Level
+            asl
+            asl
+            asl
+            clc
+            adc FrameCount
+            tax
+            txa
+            asl
+            eor #$A5
+            and #%01011010
+            sta ObsPF1
+            txa
+            lsr
+            eor #$5A
+            and #%01011010
+            sta ObsPF2
+            txa
+            clc
+            adc #$37
+            eor #$C3
+            and #%01111110
+            sta ObsPF1+1
+            txa
+            clc
+            adc #$91
+            eor #$3C
+            and #%01100110
+            sta ObsPF2+1
+            txa
+            clc
+            adc #$6B
+            eor #$55
+            and #%01010100
+            sta ObsPF1+2
+            txa
+            clc
+            adc #$D2
+            eor #$AA
+            and #%00101010
+            sta ObsPF2+2
+            txa
+            clc
+            adc #$1F
+            eor #$69
+            and #%01111100
+            sta ObsPF1+3
+            txa
+            clc
+            adc #$E4
+            eor #$96
+            and #%00111110
+            sta ObsPF2+3
+            rts
+
+;===============================================================================
+; GAME LOGIC
+;===============================================================================
+GameLogic SUBROUTINE
+            lda #0
+            sta Moving
+
+            lda SWCHA
+            and #%00010000
+            bne .noU
+            inc Moving
+            lda #0
+            sta TankDir
+            lda TankY
+            sec
+            sbc #1
+            cmp #12
+            bcs .upOk
+            lda #12
+.upOk       sta TankY
+.noU
+            lda SWCHA
+            and #%00100000
+            bne .noD
+            inc Moving
+            lda #2
+            sta TankDir
+            inc TankY
+            lda TankY
+            cmp #175
+            bcc .noD
+            lda #175
+            sta TankY
+.noD
+            lda SWCHA
+            and #%01000000
+            bne .noL
+            inc Moving
+            lda #3
+            sta TankDir
+            lda TankX
+            sec
+            sbc #1
+            cmp #8
+            bcs .leftOk
+            lda #8
+.leftOk     sta TankX
+.noL
+            lda SWCHA
+            and #%10000000
+            bne .noR
+            inc Moving
+            lda #1
+            sta TankDir
+            inc TankX
+            lda TankX
+            cmp #148
+            bcc .noR
+            lda #148
+            sta TankX
+.noR
+            lda INPT4
+            bmi .noF
+            lda ButtonPrev
+            bpl .noF
+            lda MissileOn
+            bne .noF
+            lda #2
+            sta MissileOn
+            lda TankX
+            clc
+            adc #3
+            cmp #152
+            bcc .mxOk
+            lda #151
+.mxOk       sta MissileX
+            lda TankY
+            clc
+            adc #3
+            sta MissileY
+            lda TankDir
+            sta MissileDir
+            lda #15
+            sta AUDC0
+            lda #12
+            sta SndVol
+            sta AUDV0
+            lda #3
+            sta AUDF0
+            lda #1
+            sta SndType
+.noF
+            lda INPT4
+            sta ButtonPrev
+
+            ; Missile movement
+            lda MissileOn
+            bne .mGo
+            jmp .noMsl
+.mGo        lda MissileDir
+            cmp #0
+            bne .md1
+            lda MissileY
+            sec
+            sbc #4
+            bcc .mKill
+            sta MissileY
+            cmp #4
+            bcs .mHit
+            jmp .mKill
+.md1        cmp #2
+            bne .md2
+            lda MissileY
+            clc
+            adc #4
+            bcs .mKill
+            sta MissileY
+            cmp #188
+            bcc .mHit
+            jmp .mKill
+.md2        cmp #3
+            bne .md3
+            lda MissileX
+            sec
+            sbc #4
+            bcc .mKill
+            sta MissileX
+            cmp #4
+            bcs .mHit
+            jmp .mKill
+.md3        lda MissileX
+            clc
+            adc #4
+            bcs .mKill
+            sta MissileX
+            cmp #155
+            bcc .mHit
+.mKill      lda #0
+            sta MissileOn
+            jmp .noMsl
+
+.mHit       ; Check hit on all targets
+            ldx #0
+.hitLoop    cpx NumTgts
+            bcs .noMsl
+            lda TgtALive,x
+            cmp #1              ; only hit alive targets (not dying)
+            bne .hitNext
+            jsr ChkHitX
+            bcc .hitNext
+            ; HIT! Start death animation on target
+            lda #15             ; death timer (frames of explosion)
+            sta TgtALive,x
+            lda #0
+            sta MissileOn
+            inc Score
+            lda Score
+            cmp #41
+            bcc .scOk
+            lda #40
+            sta Score
+.scOk       lda #12
+            sta AUDC0
+            lda #15
+            sta SndVol
+            sta AUDV0
+            lda #4
+            sta AUDF0
+            lda #2
+            sta SndType
+            jmp .noMsl
+.hitNext    inx
+            jmp .hitLoop
+.noMsl
+
+            ; Update target death timers
+            ldx #0
+.deathLoop  cpx NumTgts
+            bcs .deathDone
+            lda TgtALive,x
+            cmp #2              ; dying? (2-15 = death timer)
+            bcc .deathNext
+            sec
+            sbc #1              ; decrement timer
+            sta TgtALive,x
+            cmp #1
+            bne .deathNext
+            ; Timer hit 1 -> fully dead
+            lda #0
+            sta TgtALive,x
+.deathNext  inx
+            jmp .deathLoop
+.deathDone
+
+            ; Check if all targets dead (alive=0, not dying)
+            ldx #0
+            ldy #0              ; count alive+dying
+.chkAll     cpx NumTgts
+            bcs .chkDone
+            lda TgtALive,x
+            beq .chkNext
+            iny                 ; still alive or dying
+.chkNext    inx
+            jmp .chkAll
+.chkDone    cpy #0
+            bne .noLvlAdv
+            ; All dead and done dying -> level up
+            lda #MODE_LVLUP
+            sta GameMode
+            lda #120
+            sta StateTimer
+            lda #4
+            sta AUDC0
+            lda #10
+            sta SndVol
+            sta AUDV0
+            lda #15
+            sta AUDF0
+            lda #4
+            sta SndType
+            jmp .skipMv
+.noLvlAdv
+
+            ; Move targets (only alive ones, not dying)
+            lda Level
+            cmp #3
+            bcs .fast
+            lda FrameCount
+            and #3
+            beq .doMv
+            jmp .skipMv
+.fast       lda FrameCount
+            and #1
+            beq .doMv
+            jmp .skipMv
+.doMv       jsr MoveTargets
+.skipMv
+
+            ; Flicker select
+            jsr FlickerSel
+
+            ; Collision check
+            lda HitFlash
+            bne .skipC
+            lda CXP0FB
+            bmi .doDeath
+            lda CXPPMM
+            bpl .skipC
+.doDeath
+            dec Lives
+            lda Lives
+            bpl .livesOk
+            lda #0
+            sta Lives
+.livesOk
+            lda #45
+            sta HitFlash
+            lda #8
+            sta AUDC0
+            lda #15
+            sta SndVol
+            sta AUDV0
+            lda #5
+            sta AUDF0
+            lda #3
+            sta SndType
+            lda #7
+            sta AUDC1
+            lda #15
+            sta AUDV1
+            lda #2
+            sta AUDF1
+.skipC      sta CXCLR
+
+            lda HitFlash
+            beq .noFl
+            dec HitFlash
+            bne .flashCont
+            ; Flash ended - respawn
+            lda #78
+            sta TankX
+            lda #170
+            sta TankY
+            lda #0
+            sta AUDV1
+            lda Lives
+            bne .noFl
+            ; Game over
+            lda #0
+            sta SndVol
+            sta AUDV0
+            lda #MODE_OVER
+            sta GameMode
+            lda #180
+            sta StateTimer
+            lda #0
+            sta MelodyIdx
+            lda #1
+            sta MelodyTimer
+            jmp .noFl
+.flashCont
+            lda HitFlash
+            lsr
+            and #$07
+            clc
+            adc #2
+            sta AUDF1
+            lda HitFlash
+            and #$03
+            clc
+            adc #4
+            sta AUDF0
+            lda HitFlash
+            lsr
+            lsr
+            sta AUDV1
+.noFl
+            ; Buffer tank gfx (skip during explosion)
+            lda HitFlash
+            bne .doExplosion
+            jsr BufTankGfx
+            jmp .gfxDone
+.doExplosion
+            ; Randomize tank sprite for explosion
+            ldx #0
+.expLoop    lda FrameCount
+            eor HitFlash
+            adc TankGfxBuf,x
+            eor TempVar
+            sta TankGfxBuf,x
+            inx
+            cpx #8
+            bne .expLoop
+.gfxDone
+
+            ; Sound engine
+            lda SndType
+            beq .nsd
+            cmp #1
+            beq .shootDec
+            cmp #2
+            beq .hitDec
+            cmp #4
+            beq .lvlDec
+            jmp .simpleDec
+.shootDec
+            lda FrameCount
+            and #1
+            bne .nsd
+            lda SndVol
+            beq .sndOff
+            sec
+            sbc #2
+            bpl .shSt
+            lda #0
+.shSt       sta SndVol
+            sta AUDV0
+            jmp .nsd
+.hitDec
+            lda SndVol
+            cmp #8
+            bcs .h1
+            lda #14
+            sta AUDC0
+.h1         lda FrameCount
+            and #1
+            bne .nsd
+            jmp .simpleDec
+.lvlDec
+            lda FrameCount
+            and #3
+            bne .nsd
+            lda AUDF0
+            sec
+            sbc #1
+            bpl .lvSt
+            lda #0
+.lvSt       sta AUDF0
+.simpleDec
+            lda FrameCount
+            and #1
+            bne .nsd
+            lda SndVol
+            beq .sndOff
+            sec
+            sbc #1
+            sta SndVol
+            sta AUDV0
+            jmp .nsd
+.sndOff     lda #0
+            sta SndVol
+            sta AUDV0
+            sta SndType
+.nsd
+
+            ; Movement sound
+            lda HitFlash
+            bne .moveDone
+            lda Moving
+            beq .noMove
+            lda #6
+            sta AUDC1
+            lda #3
+            sta AUDV1
+            lda FrameCount
+            and #1
+            clc
+            adc #30
+            sta AUDF1
+            jmp .moveDone
+.noMove     lda #0
+            sta AUDV1
+.moveDone
+
+            ; Win check
+            lda Score
+            cmp #40
+            bcc .noWin
+            lda #0
+            sta SndVol
+            sta AUDV0
+            sta AUDV1
+            lda #MODE_OVER
+            sta GameMode
+            lda #180
+            sta StateTimer
+            lda #0
+            sta MelodyIdx
+            lda #1
+            sta MelodyTimer
+.noWin      jmp WaitDraw
+
+;===============================================================================
+; Hit check: X = target index. Return C=1 if hit.
+;===============================================================================
+ChkHitX SUBROUTINE
+            lda MissileY
+            sec
+            sbc TgtAY,x
+            bcs .y
+            eor #$FF
+            sec
+            adc #0
+.y          cmp #8
+            bcs .miss
+            lda MissileX
+            sec
+            sbc TgtAX,x
+            bcs .x
+            eor #$FF
+            sec
+            adc #0
+.x          cmp #10
+            bcs .miss
+            sec
+            rts
+.miss       clc
+            rts
+
+;===============================================================================
+; Move all alive targets
+;===============================================================================
+MoveTargets SUBROUTINE
+            ldx #0
+.loop       cpx NumTgts
+            bcs .done
+            lda TgtALive,x
+            cmp #1
+            bne .next           ; skip dead and dying
+            ; Move X
+            lda TgtADirX,x
+            beq .my
+            cmp #1
+            bne .ml
+            inc TgtAX,x
+            lda TgtAX,x
+            cmp #135
+            bcc .my
+            lda #$FF
+            sta TgtADirX,x
+            jmp .my
+.ml         dec TgtAX,x
+            lda TgtAX,x
+            cmp #12
+            bcs .my
+            lda #1
+            sta TgtADirX,x
+.my         ; Move Y
+            lda TgtADirY,x
+            beq .next
+            cmp #1
+            bne .mu
+            inc TgtAY,x
+            lda TgtAY,x
+            cmp #155
+            bcc .next
+            lda #$FF
+            sta TgtADirY,x
+            jmp .next
+.mu         dec TgtAY,x
+            lda TgtAY,x
+            cmp #15
+            bcs .next
+            lda #1
+            sta TgtADirY,x
+.next       inx
+            jmp .loop
+.done       rts
+
+;===============================================================================
+; Flicker select - cycle through targets, pick next visible one
+;===============================================================================
+FlickerSel SUBROUTINE
+            ldx FlickerIdx
+            inx
+            cpx NumTgts
+            bcc .ok
+            ldx #0
+.ok         stx FlickerIdx
+            ; Try all targets starting from current
+            ldy NumTgts
+.tryLoop    lda TgtALive,x
+            bne .found          ; alive or dying = visible
+            inx
+            cpx NumTgts
+            bcc .tnw
+            ldx #0
+.tnw        dey
+            bne .tryLoop
+            ; Nothing visible
+            lda #0
+            sta TgtLive
+            rts
+.found      sta TgtLive         ; 1=alive, 2+=dying
+            lda TgtAX,x
+            sta TgtX
+            lda TgtAY,x
+            sta TgtY
+            rts
+
+;===============================================================================
+; Buffer tank graphics
+;===============================================================================
+BufTankGfx SUBROUTINE
+            ldx #0
+            lda TankDir
+            cmp #0
+            beq .up
+            cmp #1
+            beq .rt
+            cmp #2
+            beq .dn
+.lf         lda TankLeftGfx,x
+            sta TankGfxBuf,x
+            inx
+            cpx #TANK_H
+            bne .lf
+            rts
+.up         lda TankUpGfx,x
+            sta TankGfxBuf,x
+            inx
+            cpx #TANK_H
+            bne .up
+            rts
+.rt         lda TankRightGfx,x
+            sta TankGfxBuf,x
+            inx
+            cpx #TANK_H
+            bne .rt
+            rts
+.dn         lda TankDownGfx,x
+            sta TankGfxBuf,x
+            inx
+            cpx #TANK_H
+            bne .dn
+            rts
+
+;===============================================================================
+; LEVEL UP / SCORE / GAME OVER LOGIC
+;===============================================================================
+LvlUpLogic SUBROUTINE
+            dec StateTimer
+            bne .build
+            lda #0
+            sta SndVol
+            sta AUDV0
+            sta AUDV1
+            lda Level
+            clc
+            adc #1
+            and #7
+            sta Level
+            jsr SetupLevel
+            lda #MODE_PLAY
+            sta GameMode
+            jmp WaitDraw
+.build      ; Build score digits
+            jsr BuildDigits
+            jmp WaitDraw
+
+ScoreLogic SUBROUTINE
+            dec StateTimer
+            bne .build
+            ; Return to title
+            lda #0
+            sta AUDV0
+            sta AUDV1
+            lda #MODE_TITLE
+            sta GameMode
+            lda #TITLE_KEITH
+            sta SubState
+            lda #180
+            sta StateTimer
+            jmp WaitDraw
+.build      jsr BuildDigits
+            jmp WaitDraw
+
+BuildDigits SUBROUTINE
+            lda Score
+            ldx #0
+.div10      cmp #10
+            bcc .divDone
+            sbc #10
+            inx
+            jmp .div10
+.divDone    asl
+            asl
+            asl
+            sta OnesOff
+            cpx #0
+            bne .hasTens
+            lda #$FF
+            sta TensOff
+            rts
+.hasTens    txa
+            asl
+            asl
+            asl
+            sta TensOff
+            rts
+
+OverLogic SUBROUTINE
+            dec StateTimer
+            bne .melody
+            ; Go to score screen (not directly to title)
+            lda #0
+            sta SndVol
+            sta AUDV0
+            sta AUDV1
+            lda #MODE_SCORE
+            sta GameMode
+            lda #150
+            sta StateTimer
+            jmp WaitDraw
+.melody
+            dec MelodyTimer
+            bne .w
+            ldx MelodyIdx
+            cpx #8
+            bcs .melDone
+            lda MelodyNotes,x
+            sta AUDF1
+            lda #12
+            sta AUDC1
+            lda MelodyVols,x
+            sta AUDV1
+            lda #25
+            sta MelodyTimer
+            inc MelodyIdx
+            jmp .w
+.melDone    lda #0
+            sta AUDV1
+.w          jmp WaitDraw
+
+;===============================================================================
+; WAIT + DISPATCH
+;===============================================================================
+WaitDraw SUBROUTINE
+            lda INTIM
+            bne WaitDraw
+            sta WSYNC
+            lda #0
+            sta VBLANK
+            lda GameMode
+            cmp #MODE_PLAY
+            beq .g
+            cmp #MODE_OVER
+            beq .o
+            cmp #MODE_LVLUP
+            beq .lv
+            cmp #MODE_SCORE
+            beq .sc
+            jmp DrawTitle
+.g          jmp DrawGame
+.o          jmp DrawOver
+.lv         jmp DrawDigitScreen
+.sc         jmp DrawDigitScreen
+
+DrawTitle SUBROUTINE
+            ldx SubState
+            cpx #TITLE_KEITH
+            beq .tK
+            cpx #TITLE_ADLER
+            beq .tA
+            cpx #TITLE_PRESENTS
+            beq .tP
+            jmp RenderBlack
+.tK         jmp RenderKeith
+.tA         jmp RenderAdler
+.tP         jmp RenderPresents
+
+;===============================================================================
+; GAME KERNEL
+;===============================================================================
+DrawGame SUBROUTINE
+            lda TankX
+            sec
+            sta WSYNC
+.d0         sbc #15
+            bcs .d0
+            eor #7
+            asl
+            asl
+            asl
+            asl
+            sta HMP0
+            sta RESP0
+            lda TgtX
+            sec
+            sta WSYNC
+.d1         sbc #15
+            bcs .d1
+            eor #7
+            asl
+            asl
+            asl
+            asl
+            sta HMP1
+            sta RESP1
+            lda MissileX
+            sec
+            sta WSYNC
+.dm         sbc #15
+            bcs .dm
+            eor #7
+            asl
+            asl
+            asl
+            asl
+            sta HMM0
+            sta RESM0
+            sta WSYNC
+            sta HMOVE
+
+            ; Colors
+            lda HitFlash
+            beq .nc
+            lda FrameCount
+            asl
+            asl
+            eor HitFlash
+            and #$FE
+            sta COLUP0
+            lda FrameCount
+            eor HitFlash
+            and #$0E
+            ora FieldColor
+            sta COLUBK
+            jmp .colorDone
+.nc         lda #$9E
+            sta COLUP0
+            lda FieldColor
+            sta COLUBK
+.colorDone
+            ; Target color: dying targets flash white
+            lda TgtLive
+            cmp #2
+            bcc .normTgt
+            lda FrameCount
+            and #2
+            beq .tgtWhite
+            lda TgtColor
+            jmp .setTgt
+.tgtWhite   lda #$0E
+            jmp .setTgt
+.normTgt    lda TgtColor
+            clc
+            adc FrameCount
+            and #$06
+            ora TgtColor
+.setTgt     sta COLUP1
+
+            lda #$0E
+            sta COLUPF
+            lda #%00000001
+            sta CTRLPF
+            lda #%00100000
+            sta NUSIZ0
+            lda #0
+            sta GRP0
+            sta GRP1
+            sta ENAM0
+            sta ENABL
+            sta PF0
+            sta PF1
+            sta PF2
+
+            ldx #0
+
+            ; Score bar: 5 lines
+            lda #$00
+            sta COLUBK
+            sta PF1
+            sta PF2
+.scr        sta WSYNC
+            txa
+            asl
+            clc
+            adc #$1A
+            sta COLUPF
+            txa
+            asl
+            asl
+            asl
+            cmp Score
+            bcs .sOff
+            lda #%11110000
+            sta PF0
+            jmp .sN
+.sOff       lda #0
+            sta PF0
+.sN         inx
+            cpx #5
+            bne .scr
+            sta WSYNC
+            lda #0
+            sta PF0
+            sta PF1
+            sta PF2
+            inx
+
+            ; Top wall
+            lda FieldColor
+            sta COLUBK
+            lda WallColor
+            ora #$0E
+            sta COLUPF
+            sta WSYNC
+            lda #%11110000
+            sta PF0
+            lda #%11111111
+            sta PF1
+            sta PF2
+            inx
+            sta WSYNC
+            inx
+
+            lda FieldColor
+            sta COLUBK
+            lda WallColor
+            ora #$08
+            sta COLUPF
+            lda #%10000000
+            sta PF0
+
+            lda TankY
+            clc
+            adc #TANK_H
+            sta TempVar
+
+            ; 2-line kernel
+.fLoop
+            txa
+            and #$1F
+            sec
+            sbc #$18
+            bcc .obsOff
+            txa
+            lsr
+            lsr
+            lsr
+            lsr
+            lsr
+            and #3
+            tay
+            lda ObsPF1,y
+            sta PF1
+            lda ObsPF2,y
+            sta PF2
+            jmp .obsDone
+.obsOff     lda #0
+            sta PF1
+            sta PF2
+            jmp .obsDone        ; need explicit jmp for fall-through
+.obsDone
+            cpx TankY
+            bcc .noTank
+            cpx TempVar
+            bcs .noTank
+            txa
+            sec
+            sbc TankY
+            tay
+            lda TankGfxBuf,y
+            sta GRP0
+            inx
+            sta WSYNC
+            jmp .line2
+.noTank     lda #0
+            sta GRP0
+            inx
+            sta WSYNC
+.line2
+            lda TgtLive
+            beq .noTgt
+            txa
+            sec
+            sbc TgtY
+            cmp #6
+            bcs .noTgt
+            tay
+            ; Dying targets use explosion graphics
+            lda TgtLive
+            cmp #2
+            bcs .tgtExplode
+            lda TargetGfx,y
+            jmp .storeTgt
+.tgtExplode
+            ; Random explosion pattern
+            tya
+            eor FrameCount
+            eor TgtLive
+.storeTgt   sta GRP1
+            jmp .tgtDone
+.noTgt      lda #0
+            sta GRP1
+.tgtDone
+            lda MissileOn
+            beq .noMsl
+            txa
+            sec
+            sbc MissileY
+            bcc .noMsl
+            cmp #4
+            bcs .noMsl
+            lda #2
+            sta ENAM0
+            jmp .mslDone
+.noMsl      lda #0
+            sta ENAM0
+.mslDone
+            inx
+            cpx #184
+            beq .fEnd
+            sta WSYNC
+            jmp .fLoop
+.fEnd
+            sta WSYNC
+            lda #%11110000
+            sta PF0
+            lda #%11111111
+            sta PF1
+            sta PF2
+            inx
+            sta WSYNC
+            inx
+            lda #0
+            sta PF0
+            sta PF1
+            sta PF2
+            sta GRP0
+            sta GRP1
+            sta ENAM0
+            sta COLUBK
+            sta COLUPF
+.bot        sta WSYNC
+            inx
+            cpx #192
+            bne .bot
+            jmp DoOverscan
+
+;===============================================================================
+; DIGIT SCREEN (shared by level-up and post-game-over score)
+;===============================================================================
+DrawDigitScreen SUBROUTINE
+            lda #$00
+            sta COLUBK
+            sta GRP0
+            sta GRP1
+            sta ENAM0
+            sta ENABL
+            sta PF0
+            sta PF1
+            sta PF2
+
+            lda TensOff
+            cmp #$FF
+            beq .single
+
+            ; TWO DIGITS: P0 at X=65, P1 at X=85
+            lda #65
+            sec
+            sta WSYNC
+.d0         sbc #15
+            bcs .d0
+            eor #7
+            asl
+            asl
+            asl
+            asl
+            sta HMP0
+            sta RESP0
+            lda #85
+            sec
+            sta WSYNC
+.d1         sbc #15
+            bcs .d1
+            eor #7
+            asl
+            asl
+            asl
+            asl
+            sta HMP1
+            sta RESP1
+            sta WSYNC
+            sta HMOVE
+
+            lda FrameCount
+            lsr
+            and #$0E
+            ora #$C0
+            sta COLUP0
+            sta COLUP1
+
+            ldx #84
+.top2       sta WSYNC
+            dex
+            bne .top2
+
+            ldy #0
+.dr2        ldx TensOff
+            lda DigitSprites,x
+            sta GRP0
+            ldx OnesOff
+            lda DigitSprites,x
+            sta GRP1
+            sta WSYNC
+            sta WSYNC
+            inc TensOff
+            inc OnesOff
+            iny
+            cpy #8
+            bne .dr2
+
+            lda #0
+            sta GRP0
+            sta GRP1
+            ldx #88
+.bot2       sta WSYNC
+            dex
+            bne .bot2
+            jmp DoOverscan
+
+.single
+            ; ONE DIGIT: P0 centered at X=76
+            lda #76
+            sec
+            sta WSYNC
+.d0s        sbc #15
+            bcs .d0s
+            eor #7
+            asl
+            asl
+            asl
+            asl
+            sta HMP0
+            sta RESP0
+            sta WSYNC
+            sta HMOVE
+
+            lda FrameCount
+            lsr
+            and #$0E
+            ora #$C0
+            sta COLUP0
+
+            ldx #86
+.top1       sta WSYNC
+            dex
+            bne .top1
+
+            ldy #0
+.dr1        ldx OnesOff
+            lda DigitSprites,x
+            sta GRP0
+            sta WSYNC
+            sta WSYNC
+            inc OnesOff
+            iny
+            cpy #8
+            bne .dr1
+
+            lda #0
+            sta GRP0
+            ldx #88
+.bot1       sta WSYNC
+            dex
+            bne .bot1
+            jmp DoOverscan
+
+;===============================================================================
+; GAME OVER
+;===============================================================================
+DrawOver SUBROUTINE
+            lda #$00
+            sta COLUBK
+            sta GRP0
+            sta GRP1
+            sta ENAM0
+            sta ENABL
+            sta PF0
+            sta PF1
+            sta PF2
+            sta COLUP0
+            sta COLUP1
+            lda FrameCount
+            lsr
+            and #$0E
+            ora #$20
+            sta COLUPF
+            lda #%00000001
+            sta CTRLPF
+
+            ldx #48
+.top        sta WSYNC
+            dex
+            bne .top
+
+            ldy #0
+.gameRow    lda GameR0,y
+            sta TempVar
+            ldx #5
+.gameSc     sta WSYNC
+            lda TempVar
+            sta PF0
+            lda GameR1,y
+            sta PF1
+            lda GameR2,y
+            sta PF2
+            dex
+            bne .gameSc
+            iny
+            cpy #8
+            bne .gameRow
+
+            sta WSYNC
+            lda #0
+            sta PF0
+            sta PF1
+            sta PF2
+            ldx #15
+.g1         sta WSYNC
+            dex
+            bne .g1
+
+            ldy #0
+.overRow    lda OverR0,y
+            sta TempVar
+            ldx #5
+.overSc     sta WSYNC
+            lda TempVar
+            sta PF0
+            lda OverR1,y
+            sta PF1
+            lda OverR2,y
+            sta PF2
+            dex
+            bne .overSc
+            iny
+            cpy #8
+            bne .overRow
+
+            sta WSYNC
+            lda #0
+            sta PF0
+            sta PF1
+            sta PF2
+            ldx #47
+.bot        sta WSYNC
+            dex
+            bne .bot
+            jmp DoOverscan
+
+;===============================================================================
+; OVERSCAN
+;===============================================================================
+DoOverscan
+            lda #2
+            sta VBLANK
+            lda #0
+            sta GRP0
+            sta GRP1
+            sta ENAM0
+            sta PF0
+            sta PF1
+            sta PF2
+            ldx #30
+.ov         sta WSYNC
+            dex
+            bne .ov
+            jmp MainLoop
+
+;===============================================================================
+; TITLE RENDERERS
+;===============================================================================
+DrawText1 SUBROUTINE
+            ldy #68
+.t          sta WSYNC
+            dey
+            bne .t
+            ldy #0
+.row        lda PFData0,y
+            sta TempVar
+            ldx #6
+.sc         sta WSYNC
+            lda TempVar
+            sta PF0
+            lda PFData1,y
+            sta PF1
+            lda PFData2,y
+            sta PF2
+            dex
+            bne .sc
+            sta WSYNC
+            lda #0
+            sta PF0
+            sta PF1
+            sta PF2
+            iny
+            cpy #8
+            bne .row
+            ldy #68
+.b          sta WSYNC
+            dey
+            bne .b
+            rts
+
+DrawText2 SUBROUTINE
+            ldy #40
+.t          sta WSYNC
+            dey
+            bne .t
+            ldy #0
+.r1         lda PFData0,y
+            sta TempVar
+            ldx #6
+.s1         sta WSYNC
+            lda TempVar
+            sta PF0
+            lda PFData1,y
+            sta PF1
+            lda PFData2,y
+            sta PF2
+            dex
+            bne .s1
+            sta WSYNC
+            lda #0
+            sta PF0
+            sta PF1
+            sta PF2
+            iny
+            cpy #8
+            bne .r1
+            ldy #8
+.g          sta WSYNC
+            dey
+            bne .g
+            ldy #0
+.r2         lda EntsR0,y
+            sta TempVar
+            ldx #6
+.s2         sta WSYNC
+            lda TempVar
+            sta PF0
+            lda EntsR1,y
+            sta PF1
+            lda EntsR2,y
+            sta PF2
+            dex
+            bne .s2
+            sta WSYNC
+            lda #0
+            sta PF0
+            sta PF1
+            sta PF2
+            iny
+            cpy #8
+            bne .r2
+            ldy #32
+.b          sta WSYNC
+            dey
+            bne .b
+            rts
+
+RenderKeith SUBROUTINE
+            lda #$00
+            sta COLUBK
+            lda FrameCount
+            lsr
+            and #$0E
+            ora #$72
+            sta COLUPF
+            lda #%00000001
+            sta CTRLPF
+            ldx #0
+.cp         lda KeithR0,x
+            sta PFData0,x
+            lda KeithR1,x
+            sta PFData1,x
+            lda KeithR2,x
+            sta PFData2,x
+            inx
+            cpx #8
+            bne .cp
+            jsr DrawText1
+            jmp DoOverscan
+
+RenderAdler SUBROUTINE
+            lda #$00
+            sta COLUBK
+            lda FrameCount
+            lsr
+            and #$0E
+            ora #$72
+            sta COLUPF
+            lda #%00000001
+            sta CTRLPF
+            ldx #0
+.cp         lda AdlerR0,x
+            sta PFData0,x
+            lda AdlerR1,x
+            sta PFData1,x
+            lda AdlerR2,x
+            sta PFData2,x
+            inx
+            cpx #8
+            bne .cp
+            jsr DrawText1
+            jmp DoOverscan
+
+RenderPresents SUBROUTINE
+            lda #$00
+            sta COLUBK
+            lda #$1C
+            sta COLUPF
+            lda #%00000001
+            sta CTRLPF
+            ldx #0
+.cp         lda PresR0,x
+            sta PFData0,x
+            lda PresR1,x
+            sta PFData1,x
+            lda PresR2,x
+            sta PFData2,x
+            inx
+            cpx #8
+            bne .cp
+            jsr DrawText2
+            jmp DoOverscan
+
+RenderBlack SUBROUTINE
+            lda #0
+            sta COLUBK
+            sta COLUPF
+            sta PF0
+            sta PF1
+            sta PF2
+            ldx #192
+.bk         sta WSYNC
+            dex
+            bne .bk
+            jmp DoOverscan
+
+;===============================================================================
+; DATA
+;===============================================================================
+
+TankUpGfx
+            .byte #%00011000,#%00011000,#%01111110,#%01111110
+            .byte #%11111111,#%11111111,#%01100110,#%01100110
+TankDownGfx
+            .byte #%01100110,#%01100110,#%11111111,#%11111111
+            .byte #%01111110,#%01111110,#%00011000,#%00011000
+TankRightGfx
+            .byte #%00111100,#%01111110,#%01111111,#%11111111
+            .byte #%11111111,#%01111111,#%01111110,#%00111100
+TankLeftGfx
+            .byte #%00111100,#%01111110,#%11111110,#%11111111
+            .byte #%11111111,#%11111110,#%01111110,#%00111100
+TargetGfx
+            .byte #%00011000,#%00111100,#%01111110
+            .byte #%01111110,#%00111100,#%00011000
+
+LvlField    .byte $D6,$B4,$96,$F6,$C6,$06,$76,$46
+LvlWall     .byte $D2,$B0,$94,$F2,$C2,$04,$72,$44
+LvlTgt      .byte $36,$2A,$1C,$44,$C8,$9A,$36,$1C
+LvlDirX     .byte $00,$01,$FF,$01,$FF,$01,$FF,$01
+LvlDirY     .byte $00,$00,$01,$FF,$01,$FF,$01,$FF
+
+MelodyNotes .byte 8,9,11,12,15,17,20,24
+MelodyVols  .byte 12,11,10,9,8,7,5,3
+
+KeithR0     .byte $50,$50,$30,$10,$30,$50,$50,$50
+KeithR1     .byte $EE,$84,$84,$E4,$84,$84,$EE,$EE
+KeithR2     .byte $57,$52,$52,$72,$52,$52,$52,$52
+AdlerR0     .byte $20,$50,$50,$70,$50,$50,$50,$50
+AdlerR1     .byte $C8,$A8,$A8,$A8,$A8,$A8,$CE,$CE
+AdlerR2     .byte $77,$51,$51,$77,$31,$51,$57,$57
+PresR0      .byte $C0,$40,$40,$C0,$40,$40,$40,$40
+PresR1      .byte $BB,$AA,$AA,$BB,$32,$2A,$2B,$2B
+PresR2      .byte $1D,$04,$04,$1D,$10,$10,$1D,$1D
+EntsR0      .byte $C0,$40,$40,$C0,$40,$40,$C0,$C0
+EntsR1      .byte $AB,$39,$39,$A9,$29,$29,$A9,$A9
+EntsR2      .byte $1D,$04,$04,$1C,$10,$10,$1C,$1C
+GameR0      .byte $C0,$40,$40,$40,$40,$40,$C0,$C0
+GameR1      .byte $92,$2B,$2B,$BA,$AA,$AA,$AA,$AA
+GameR2      .byte $1D,$05,$05,$1D,$05,$05,$1D,$1D
+OverR0      .byte $C0,$40,$40,$40,$40,$40,$C0,$C0
+OverR1      .byte $AB,$AA,$AA,$AB,$AA,$92,$93,$93
+OverR2      .byte $1D,$14,$14,$1D,$0C,$14,$15,$15
+
+DigitSprites
+            .byte $38,$44,$44,$44,$44,$44,$38,$38  ; 0
+            .byte $10,$30,$10,$10,$10,$10,$38,$38  ; 1
+            .byte $38,$44,$04,$18,$20,$40,$7C,$7C  ; 2
+            .byte $38,$44,$04,$18,$04,$44,$38,$38  ; 3
+            .byte $08,$18,$28,$48,$7C,$08,$08,$08  ; 4
+            .byte $7C,$40,$78,$04,$04,$44,$38,$38  ; 5
+            .byte $38,$40,$40,$78,$44,$44,$38,$38  ; 6
+            .byte $7C,$04,$08,$10,$20,$20,$20,$20  ; 7
+            .byte $38,$44,$44,$38,$44,$44,$38,$38  ; 8
+            .byte $38,$44,$44,$3C,$04,$08,$30,$30  ; 9
+
+            ORG $FFFA
+            .word Reset
+            .word Reset
+            .word Reset
+
+            END

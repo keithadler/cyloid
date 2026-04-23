@@ -1,0 +1,6 @@
+*.bin
+*.sym
+*.lst
+*.pyc
+encode_*.py
+gen_*.py
